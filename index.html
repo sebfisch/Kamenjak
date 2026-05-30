@@ -168,7 +168,7 @@
 </button>
 
 <div id="cal-ui">
-  <div id="cal-banner">Pan map so ✛ is exactly on your position, then tap <strong>Set point</strong></div>
+  <div id="cal-banner">Pan map so ✛ is exactly on your position, then tap <strong>Set point</strong><br><span id="cal-acc"></span></div>
   <div id="cal-cross"><div id="cal-cross-dot"></div></div>
   <div id="cal-bar">
     <button class="cal-action" id="cal-cancel">Cancel</button>
@@ -181,10 +181,20 @@
 
 <script src="leaflet.js"></script>
 <script>
-// Approximate image bounds — used only to frame the initial view.
-// All GPS positioning goes through the calibration transform, so
-// errors here only affect the starting pan position, not accuracy.
 const BOUNDS = [[44.708, 13.845], [44.843, 13.935]];
+
+// ── Calibration point quality ─────────────────────────────────────────────────
+// Keep at most MAX_POINTS. Each point is scored by:
+//   quality = exp(−age / RECENCY_TAU) / accuracy_metres
+// i.e. recent + precise = high score.  When the pool exceeds MAX_POINTS the
+// lowest-scoring point is dropped, so the set self-prunes toward the best data.
+const MAX_POINTS  = 20;
+const RECENCY_TAU = 3 * 24 * 60 * 60 * 1000; // 3-day half-life in ms
+
+function pointQuality(pt) {
+  const age = Date.now() - pt.timestamp;
+  return Math.exp(-age / RECENCY_TAU) / pt.accuracy;
+}
 
 const map = L.map('map', {
   minZoom: 12, maxZoom: 19,
@@ -207,21 +217,18 @@ preload.src = 'map.jpg';
 L.imageOverlay('map.jpg', BOUNDS).addTo(map);
 
 // ── Calibration: N-point least-squares ───────────────────────────────────────
-//
-// Each calibration point pairs a raw GPS fix with the map position the user
-// confirmed (the screen centre when they tapped "Set point"):
-//   { raw: {lat, lng}, map: {lat, lng} }
-//
-// With 1 point  → translation only (offset).
-// With 2+ points → independent 1-D linear regression for lat and lng:
-//
-//   map_lat = sLat * raw_lat + oLat        (least-squares fit over all points)
-//   map_lng = sLng * raw_lng + oLng
-//
-// More points average out GPS noise and improve the scale estimate.
+// Points: { raw:{lat,lng}, map:{lat,lng}, accuracy, timestamp }
+// 1 point  → translation only.
+// 2+ points → independent 1-D least-squares for lat and lng.
 
 let calPoints = [];
 try { const s = localStorage.getItem('kmap-pts'); if (s) calPoints = JSON.parse(s); } catch (_) {}
+
+function prunePoints() {
+  if (calPoints.length <= MAX_POINTS) return;
+  calPoints.sort((a, b) => pointQuality(a) - pointQuality(b)); // worst first
+  calPoints.splice(0, calPoints.length - MAX_POINTS);
+}
 
 // Cached transform coefficients, recomputed whenever calPoints changes.
 let T = null;
@@ -278,7 +285,8 @@ function updateBadge() {
 updateBadge();
 
 // ── GPS tracking ─────────────────────────────────────────────────────────────
-let rawGps = null, userMarker = null, accCircle = null;
+let rawGps = null, rawAccuracy = Infinity;
+let userMarker = null, accCircle = null;
 let tracking = false, followMode = false, toastTimer = null;
 
 const locIcon = L.divIcon({
@@ -303,6 +311,10 @@ function refreshMarker() {
 
 map.on('locationfound', (e) => {
   rawGps = e.latlng;
+  rawAccuracy = e.accuracy;
+  // Keep banner accuracy reading fresh while calibration panel is open
+  const accEl = document.getElementById('cal-acc');
+  if (accEl) accEl.textContent = `GPS accuracy: ±${Math.round(e.accuracy)} m`;
   const pos = toDisplay(rawGps);
   if (!userMarker) {
     accCircle = L.circle(pos, {
@@ -349,8 +361,13 @@ document.getElementById('cal-btn').addEventListener('click', () => {
 
 document.getElementById('cal-set').addEventListener('click', () => {
   const centre = map.getCenter();
-  calPoints.push({ raw: { lat: rawGps.lat, lng: rawGps.lng },
-                   map: { lat: centre.lat,  lng: centre.lng  } });
+  calPoints.push({
+    raw:       { lat: rawGps.lat, lng: rawGps.lng },
+    map:       { lat: centre.lat, lng: centre.lng },
+    accuracy:  rawAccuracy,
+    timestamp: Date.now()
+  });
+  prunePoints();
   savePoints();
   fitTransform();
   updateBadge();
@@ -358,10 +375,11 @@ document.getElementById('cal-set').addEventListener('click', () => {
   refreshMarker();
 
   const n = calPoints.length;
+  const acc = Math.round(rawAccuracy);
   if (n === 1) {
-    toast('Point 1 saved. Add more points from different locations for better accuracy.');
+    toast(`Point saved (±${acc} m). Add more from different spots for scale correction.`);
   } else {
-    toast(`${n} calibration points — scale and offset updated.`);
+    toast(`${n} calibration point${n > MAX_POINTS ? 's (oldest/worst dropped)' : 's'} · ±${acc} m`);
   }
 });
 
