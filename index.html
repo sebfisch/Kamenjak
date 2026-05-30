@@ -3,157 +3,242 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
-  <title>Kamenjak Map</title>
+  <title>Kamenjak</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
         crossorigin=""/>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
+    html, body, #map { height: 100%; width: 100%; margin: 0; padding: 0; }
+    body { background: #1a5276; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; overflow: hidden; }
 
-    html, body {
-      height: 100%;
-      margin: 0;
-      padding: 0;
-      background: #1565c0;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      overflow: hidden;
-    }
-
-    #map {
-      height: 100%;
-      width: 100%;
-    }
-
-    /* Pulsing location dot */
-    .location-dot {
-      width: 18px;
-      height: 18px;
-      background: #2196F3;
-      border: 3px solid #fff;
-      border-radius: 50%;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.5);
-      position: relative;
-    }
-
-    .location-dot::after {
-      content: '';
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      width: 44px;
-      height: 44px;
-      border-radius: 50%;
-      background: rgba(33, 150, 243, 0.3);
-      animation: ripple 2s ease-out infinite;
-    }
-
-    @keyframes ripple {
-      0%   { transform: translate(-50%, -50%) scale(0.5); opacity: 0.8; }
-      100% { transform: translate(-50%, -50%) scale(1.8); opacity: 0; }
-    }
-
-    /* "You are here" label */
-    .location-label {
-      position: absolute;
-      bottom: 24px;
-      left: 50%;
-      transform: translateX(-50%);
-      background: rgba(0,0,0,0.7);
-      color: #fff;
-      font-size: 11px;
-      font-weight: 600;
-      padding: 3px 8px;
-      border-radius: 10px;
-      white-space: nowrap;
-      pointer-events: none;
-      letter-spacing: 0.3px;
-    }
-
-    /* Reset-view button */
-    .reset-btn {
+    /* ── GPS button ── */
+    #gps-btn {
       position: fixed;
       bottom: 24px;
       right: 16px;
       z-index: 1000;
-      background: #fff;
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
       border: none;
-      border-radius: 8px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-      width: 44px;
-      height: 44px;
+      background: #2196F3;
+      color: white;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.45);
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 0;
+      transition: background 0.15s, transform 0.1s;
       -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
     }
+    #gps-btn.active  { background: #0d47a1; }
+    #gps-btn:active  { transform: scale(0.92); }
+    #gps-btn svg { width: 26px; height: 26px; fill: white; }
 
-    .reset-btn:active { background: #f0f0f0; }
+    /* ── Status toast ── */
+    #toast {
+      position: fixed;
+      bottom: 96px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1000;
+      background: rgba(0,0,0,0.78);
+      color: white;
+      padding: 7px 16px;
+      border-radius: 20px;
+      font-size: 13px;
+      white-space: nowrap;
+      opacity: 0;
+      transition: opacity 0.25s;
+      pointer-events: none;
+    }
+    #toast.show { opacity: 1; }
 
-    .reset-btn svg { width: 22px; height: 22px; fill: #444; }
+    /* ── Loading overlay ── */
+    #loading {
+      position: fixed;
+      inset: 0;
+      background: rgba(26,82,118,0.88);
+      z-index: 2000;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      color: white;
+      font-size: 15px;
+      transition: opacity 0.35s;
+    }
+    #loading.gone { opacity: 0; pointer-events: none; }
+    .spinner {
+      width: 28px; height: 28px;
+      border: 3px solid rgba(255,255,255,0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 0.75s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Location dot icon ── */
+    .loc-wrap {
+      position: relative;
+      width: 20px; height: 20px;
+    }
+    .loc-dot {
+      position: absolute;
+      inset: 2px;
+      background: #2196F3;
+      border: 3px solid white;
+      border-radius: 50%;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+    }
+    .loc-ring {
+      position: absolute;
+      inset: -8px;
+      border-radius: 50%;
+      background: rgba(33,150,243,0.28);
+      animation: locpulse 2.2s ease-out infinite;
+    }
+    @keyframes locpulse {
+      0%   { transform: scale(0.5); opacity: 0.9; }
+      100% { transform: scale(2);   opacity: 0;   }
+    }
   </style>
 </head>
 <body>
-  <div id="map"></div>
-  <button class="reset-btn" id="resetBtn" title="Zoom to my location">
-    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
-    </svg>
-  </button>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV/XN2GQnc="
-          crossorigin=""></script>
-  <script>
-    // Image native dimensions (pixels)
-    const IMG_W = 3072;
-    const IMG_H = 4080;
+<div id="loading">
+  <div class="spinner"></div>
+  <span>Loading map…</span>
+</div>
 
-    // Leaflet CRS.Simple: lat = y-up from bottom-left, lng = x-right
-    // Pixel (px, py) from image top-left → [IMG_H - py, px]
-    const bounds = [[0, 0], [IMG_H, IMG_W]];
+<div id="map"></div>
 
-    const map = L.map('map', {
-      crs: L.CRS.Simple,
-      minZoom: -3,
-      maxZoom: 2,
-      zoomSnap: 0.1,
-      zoomDelta: 0.5,
-      attributionControl: false,
-      zoomControl: true
-    });
+<!-- GPS crosshair icon -->
+<button id="gps-btn" title="Show my location">
+  <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+    <path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94
+             3c-.46-4.17-3.77-7.48-7.94-7.94V1h-2v2.06C6.83 3.52 3.52 6.83
+             3.06 11H1v2h2.06c.46 4.17 3.77 7.48 7.94 7.94V23h2v-2.06
+             c4.17-.46 7.48-3.77 7.94-7.94H23v-2h-2.06zM12 19c-3.87
+             0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/>
+  </svg>
+</button>
 
-    // Reposition zoom control away from the reset button
-    map.zoomControl.setPosition('bottomleft');
+<div id="toast"></div>
 
-    L.imageOverlay('map.jpg', bounds).addTo(map);
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV/XN2GQnc="
+        crossorigin=""></script>
+<script>
+// ── Geographic bounds of the map photo (Rt Kamenjak, Croatia) ──────────────
+// These register the photo over real GPS coordinates so the locate dot
+// lands in the right place. Tune by adjusting SW/NE if the dot drifts.
+const BOUNDS = [
+  [44.708, 13.845],   // SW — image bottom-left  [lat, lng]
+  [44.843, 13.935]    // NE — image top-right
+];
 
-    // Current location: top of the peninsula
-    // Approx pixel (1540, 370) from image top-left → Leaflet [3710, 1540]
-    const LOC_PX = [1540, 370];
-    const locLatLng = L.latLng(IMG_H - LOC_PX[1], LOC_PX[0]);
+const map = L.map('map', {
+  minZoom: 12,
+  maxZoom: 19,
+  attributionControl: false,
+  zoomControl: true
+});
+map.zoomControl.setPosition('bottomleft');
 
-    const locIcon = L.divIcon({
-      html: '<div class="location-dot"></div><div class="location-label">You are here</div>',
-      iconSize: [18, 18],
-      iconAnchor: [9, 9],
-      className: ''
-    });
+// Fit bounds before image loads so the view is ready
+map.fitBounds(BOUNDS);
 
-    L.marker(locLatLng, { icon: locIcon, interactive: false }).addTo(map);
+// ── Map photo overlay ──────────────────────────────────────────────────────
+const overlay = L.imageOverlay('map.jpg', BOUNDS, { opacity: 1 });
 
-    // Initial view: show full map, then ease to current location
-    map.fitBounds(bounds, { padding: [0, 0] });
-    setTimeout(() => {
-      map.flyTo(locLatLng, -0.5, { duration: 1.2, easeLinearity: 0.3 });
-    }, 400);
+overlay.on('load', () => {
+  document.getElementById('loading').classList.add('gone');
+});
+overlay.on('error', () => {
+  const loading = document.getElementById('loading');
+  loading.querySelector('span').textContent = 'Could not load map image.';
+  loading.querySelector('.spinner').style.display = 'none';
+});
 
-    // Reset button → fly back to location marker
-    document.getElementById('resetBtn').addEventListener('click', () => {
-      map.flyTo(locLatLng, -0.5, { duration: 0.8, easeLinearity: 0.3 });
-    });
-  </script>
+overlay.addTo(map);
+
+// ── GPS tracking ───────────────────────────────────────────────────────────
+let userMarker    = null;
+let accuracyCircle = null;
+let tracking      = false;
+let followMode    = false;
+let toastTimer    = null;
+
+const locIcon = L.divIcon({
+  html: '<div class="loc-wrap"><div class="loc-ring"></div><div class="loc-dot"></div></div>',
+  iconSize:   [20, 20],
+  iconAnchor: [10, 10],
+  className:  ''
+});
+
+function toast(msg, duration = 3500) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  if (duration > 0) toastTimer = setTimeout(() => el.classList.remove('show'), duration);
+}
+
+map.on('locationfound', (e) => {
+  const { latlng, accuracy } = e;
+
+  if (!userMarker) {
+    accuracyCircle = L.circle(latlng, {
+      radius: accuracy,
+      color: '#2196F3', weight: 1,
+      fillColor: '#2196F3', fillOpacity: 0.10,
+      interactive: false
+    }).addTo(map);
+    userMarker = L.marker(latlng, { icon: locIcon, zIndexOffset: 1000 }).addTo(map);
+    toast(`Located · ±${Math.round(accuracy)} m`);
+  } else {
+    userMarker.setLatLng(latlng);
+    accuracyCircle.setLatLng(latlng).setRadius(accuracy);
+  }
+
+  if (followMode) {
+    map.setView(latlng, Math.max(map.getZoom(), 15));
+  }
+});
+
+map.on('locationerror', (e) => {
+  toast('Location error: ' + e.message);
+  document.getElementById('gps-btn').classList.remove('active');
+  tracking = false;
+  followMode = false;
+});
+
+// Panning breaks follow mode so the user can freely browse the map
+map.on('dragstart', () => { followMode = false; });
+
+// ── GPS button ─────────────────────────────────────────────────────────────
+document.getElementById('gps-btn').addEventListener('click', () => {
+  const btn = document.getElementById('gps-btn');
+
+  if (!tracking) {
+    // First tap: start watching GPS
+    map.locate({ watch: true, enableHighAccuracy: true, maximumAge: 5000 });
+    tracking   = true;
+    followMode = true;
+    btn.classList.add('active');
+    toast('Finding your location…', 0);
+  } else {
+    // Subsequent taps: re-enable follow mode and jump to position
+    followMode = true;
+    if (userMarker) {
+      map.setView(userMarker.getLatLng(), Math.max(map.getZoom(), 15));
+    }
+  }
+});
+</script>
 </body>
 </html>
