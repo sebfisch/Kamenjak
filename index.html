@@ -104,6 +104,13 @@
       padding: 12px 20px; font-size: 14px; line-height: 1.5;
       text-align: center;
     }
+    #cal-gps-status {
+      display: inline-block; margin-top: 4px;
+      font-size: 12px; padding: 2px 10px; border-radius: 10px;
+      background: rgba(255,255,255,0.12);
+    }
+    #cal-gps-status.fresh { color: #81C784; }
+    #cal-gps-status.stale { color: #FFB74D; }
 
     /* Fixed crosshair — always at screen centre, never moves */
     #cal-cross {
@@ -168,7 +175,10 @@
 </button>
 
 <div id="cal-ui">
-  <div id="cal-banner">Pan map so ✛ is exactly on your position, then tap <strong>Set point</strong><br><span id="cal-acc"></span></div>
+  <div id="cal-banner">
+    Pan map so ✛ is exactly on your position, then tap <strong>Set point</strong><br>
+    <span id="cal-gps-status">Waiting for GPS…</span>
+  </div>
   <div id="cal-cross"><div id="cal-cross-dot"></div></div>
   <div id="cal-bar">
     <button class="cal-action" id="cal-cancel">Cancel</button>
@@ -325,7 +335,7 @@ function updateBadge() {
 updateBadge();
 
 // ── GPS tracking ─────────────────────────────────────────────────────────────
-let rawGps = null, rawAccuracy = Infinity;
+let rawGps = null, rawAccuracy = Infinity, lastFixTime = 0;
 let userMarker = null, accCircle = null;
 let tracking = false, followMode = false, toastTimer = null;
 
@@ -349,12 +359,59 @@ function refreshMarker() {
   if (accCircle) accCircle.setLatLng(pos);
 }
 
+// ── Calibration banner GPS status ticker ─────────────────────────────────────
+let bannerTimer = null;
+
+function updateGpsStatus() {
+  const el = document.getElementById('cal-gps-status');
+  if (!el) return;
+  if (!rawGps) { el.textContent = 'Waiting for GPS…'; el.className = ''; return; }
+  const ageSec = Math.round((Date.now() - lastFixTime) / 1000);
+  const ageStr = ageSec < 3 ? 'just now' : `${ageSec}s ago`;
+  const accStr = `±${Math.round(rawAccuracy)} m`;
+  const stale  = ageSec > 15;
+  el.textContent = stale
+    ? `GPS: ${accStr} · ${ageStr} ⚠ refreshing…`
+    : `GPS: ${accStr} · ${ageStr}`;
+  el.className = stale ? 'stale' : 'fresh';
+}
+
+// Force the OS to take a new hardware reading (maximumAge:0 bypasses the cache,
+// same mechanism Google Maps uses to "wake up" GPS).
+function requestFreshFix() {
+  if (!navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      rawGps      = L.latLng(pos.coords.latitude, pos.coords.longitude);
+      rawAccuracy = pos.coords.accuracy;
+      lastFixTime = Date.now();
+      updateGpsStatus();
+      refreshMarker();
+    },
+    () => {},  // silent — watchPosition will still provide updates
+    { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 }
+  );
+}
+
+function openCalUI() {
+  map.setView(toDisplay(rawGps), Math.max(map.getZoom(), 15));
+  document.getElementById('cal-ui').classList.add('active');
+  updateGpsStatus();
+  bannerTimer = setInterval(updateGpsStatus, 1000);
+  requestFreshFix();
+}
+
+function closeCalUI() {
+  document.getElementById('cal-ui').classList.remove('active');
+  clearInterval(bannerTimer);
+  bannerTimer = null;
+}
+
 map.on('locationfound', (e) => {
-  rawGps = e.latlng;
+  rawGps      = e.latlng;
   rawAccuracy = e.accuracy;
-  // Keep banner accuracy reading fresh while calibration panel is open
-  const accEl = document.getElementById('cal-acc');
-  if (accEl) accEl.textContent = `GPS accuracy: ±${Math.round(e.accuracy)} m`;
+  lastFixTime = Date.now();
+  updateGpsStatus();
   const pos = toDisplay(rawGps);
   if (!userMarker) {
     accCircle = L.circle(pos, {
@@ -391,16 +448,13 @@ document.getElementById('gps-btn').addEventListener('click', () => {
 });
 
 // ── Calibration UI ───────────────────────────────────────────────────────────
-const calUI = document.getElementById('cal-ui');
-
 document.getElementById('cal-btn').addEventListener('click', () => {
   if (!rawGps) { toast('Enable GPS first, then calibrate.'); return; }
-  map.setView(toDisplay(rawGps), Math.max(map.getZoom(), 15));
-  calUI.classList.add('active');
+  openCalUI();
 });
 
 document.getElementById('cal-set').addEventListener('click', () => {
-  const centre = map.getCenter();
+  const centre   = map.getCenter();
   const rejected = tryAddPoint({
     raw:       { lat: rawGps.lat, lng: rawGps.lng },
     map:       { lat: centre.lat, lng: centre.lng },
@@ -411,33 +465,21 @@ document.getElementById('cal-set').addEventListener('click', () => {
   if (rejected) {
     toast(`Outlier rejected (${rejected.residualM} m from model). ` +
           `Check your position, or tap ↺ to reset and start fresh.`, 6000);
-    return;  // leave calibration panel open so the user can retry
+    return;  // leave panel open for retry
   }
 
-  savePoints();
-  fitTransform();
-  updateBadge();
-  calUI.classList.remove('active');
-  refreshMarker();
-
-  const n = calPoints.length;
-  const acc = Math.round(rawAccuracy);
+  savePoints(); fitTransform(); updateBadge(); closeCalUI(); refreshMarker();
+  const n = calPoints.length, acc = Math.round(rawAccuracy);
   toast(n === 1
     ? `Point saved (±${acc} m). Add more from different spots for scale correction.`
     : `${n} calibration points · ±${acc} m`);
 });
 
-document.getElementById('cal-cancel').addEventListener('click', () => {
-  calUI.classList.remove('active');
-});
+document.getElementById('cal-cancel').addEventListener('click', closeCalUI);
 
 document.getElementById('cal-reset').addEventListener('click', () => {
   calPoints = [];
-  savePoints();
-  fitTransform();
-  updateBadge();
-  calUI.classList.remove('active');
-  refreshMarker();
+  savePoints(); fitTransform(); updateBadge(); closeCalUI(); refreshMarker();
   toast('All calibration points cleared.');
 });
 </script>
