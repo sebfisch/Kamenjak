@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  <title>Kamenjak Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+        crossorigin=""/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    html, body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      background: #1565c0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      overflow: hidden;
+    }
+
+    #map {
+      height: 100%;
+      width: 100%;
+    }
+
+    /* Pulsing location dot */
+    .location-dot {
+      width: 18px;
+      height: 18px;
+      background: #2196F3;
+      border: 3px solid #fff;
+      border-radius: 50%;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+      position: relative;
+    }
+
+    .location-dot::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      background: rgba(33, 150, 243, 0.3);
+      animation: ripple 2s ease-out infinite;
+    }
+
+    @keyframes ripple {
+      0%   { transform: translate(-50%, -50%) scale(0.5); opacity: 0.8; }
+      100% { transform: translate(-50%, -50%) scale(1.8); opacity: 0; }
+    }
+
+    /* "You are here" label */
+    .location-label {
+      position: absolute;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.7);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 10px;
+      white-space: nowrap;
+      pointer-events: none;
+      letter-spacing: 0.3px;
+    }
+
+    /* Reset-view button */
+    .reset-btn {
+      position: fixed;
+      bottom: 24px;
+      right: 16px;
+      z-index: 1000;
+      background: #fff;
+      border: none;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      width: 44px;
+      height: 44px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .reset-btn:active { background: #f0f0f0; }
+
+    .reset-btn svg { width: 22px; height: 22px; fill: #444; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <button class="reset-btn" id="resetBtn" title="Zoom to my location">
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
+    </svg>
+  </button>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV/XN2GQnc="
+          crossorigin=""></script>
+  <script>
+    // Image native dimensions (pixels)
+    const IMG_W = 3072;
+    const IMG_H = 4080;
+
+    // Leaflet CRS.Simple: lat = y-up from bottom-left, lng = x-right
+    // Pixel (px, py) from image top-left → [IMG_H - py, px]
+    const bounds = [[0, 0], [IMG_H, IMG_W]];
+
+    const map = L.map('map', {
+      crs: L.CRS.Simple,
+      minZoom: -3,
+      maxZoom: 2,
+      zoomSnap: 0.1,
+      zoomDelta: 0.5,
+      attributionControl: false,
+      zoomControl: true
+    });
+
+    // Reposition zoom control away from the reset button
+    map.zoomControl.setPosition('bottomleft');
+
+    L.imageOverlay('map.jpg', bounds).addTo(map);
+
+    // Current location: top of the peninsula
+    // Approx pixel (1540, 370) from image top-left → Leaflet [3710, 1540]
+    const LOC_PX = [1540, 370];
+    const locLatLng = L.latLng(IMG_H - LOC_PX[1], LOC_PX[0]);
+
+    const locIcon = L.divIcon({
+      html: '<div class="location-dot"></div><div class="location-label">You are here</div>',
+      iconSize: [18, 18],
+      iconAnchor: [9, 9],
+      className: ''
+    });
+
+    L.marker(locLatLng, { icon: locIcon, interactive: false }).addTo(map);
+
+    // Initial view: show full map, then ease to current location
+    map.fitBounds(bounds, { padding: [0, 0] });
+    setTimeout(() => {
+      map.flyTo(locLatLng, -0.5, { duration: 1.2, easeLinearity: 0.3 });
+    }, 400);
+
+    // Reset button → fly back to location marker
+    document.getElementById('resetBtn').addEventListener('click', () => {
+      map.flyTo(locLatLng, -0.5, { duration: 0.8, easeLinearity: 0.3 });
+    });
+  </script>
+</body>
+</html>
