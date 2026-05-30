@@ -233,67 +233,83 @@ L.imageOverlay('map.jpg', BOUNDS).addTo(map);
 let calPoints = [];
 try { const s = localStorage.getItem('kmap-pts'); if (s) calPoints = JSON.parse(s); } catch (_) {}
 
-function addPoint(newPt) {
-  // Within a spatio-temporal cluster keep only the single best point.
-  const inCluster = [];
-  const outside   = calPoints.filter(p => {
-    if (distMetres(p.raw, newPt.raw) < CLUSTER_DIST &&
-        Math.abs(p.timestamp - newPt.timestamp) < CLUSTER_TIME) {
-      inCluster.push(p); return false;
-    }
-    return true;
-  });
-  // Pick the winner from cluster + newcomer
+// ── Transform helpers (pure — work on any point array) ───────────────────────
+function fitFromPoints(pts) {
+  const n = pts.length;
+  if (n === 0) return null;
+  if (n === 1) return { simple: true,
+    dLat: pts[0].map.lat - pts[0].raw.lat,
+    dLng: pts[0].map.lng - pts[0].raw.lng };
+  function linreg(xs, ys) {
+    let sx=0, sy=0, sxx=0, sxy=0;
+    for (let i=0;i<n;i++){sx+=xs[i];sy+=ys[i];sxx+=xs[i]*xs[i];sxy+=xs[i]*ys[i];}
+    const d = n*sxx - sx*sx;
+    const s = Math.abs(d) > 1e-14 ? (n*sxy - sx*sy)/d : 1;
+    return { s, o: (sy - s*sx)/n };
+  }
+  const la = linreg(pts.map(p=>p.raw.lat), pts.map(p=>p.map.lat));
+  const lo = linreg(pts.map(p=>p.raw.lng), pts.map(p=>p.map.lng));
+  return { simple: false, sLat: la.s, oLat: la.o, sLng: lo.s, oLng: lo.o };
+}
+
+function applyTransform(t, raw) {
+  if (!t)        return { lat: raw.lat, lng: raw.lng };
+  if (t.simple)  return { lat: raw.lat + t.dLat, lng: raw.lng + t.dLng };
+  return { lat: t.sLat * raw.lat + t.oLat, lng: t.sLng * raw.lng + t.oLng };
+}
+
+function rmseMetres(pts, t) {
+  let sum = 0;
+  for (const p of pts) {
+    const pr = applyTransform(t, p.raw);
+    const dLat = (pr.lat - p.map.lat) * 111320;
+    const dLng = (pr.lng - p.map.lng) * 111320 * Math.cos(p.raw.lat * Math.PI / 180);
+    sum += dLat*dLat + dLng*dLng;
+  }
+  return Math.sqrt(sum / pts.length);
+}
+
+// ── Cached transform (rebuilt from calPoints) ─────────────────────────────────
+let T = null;
+function fitTransform() { T = fitFromPoints(calPoints); }
+
+function toDisplay(raw) {
+  const d = applyTransform(T, raw);
+  return L.latLng(d.lat, d.lng);
+}
+
+// ── Add a new calibration point ───────────────────────────────────────────────
+// Returns null on success, or { residualM } if the point is an outlier.
+function tryAddPoint(newPt) {
+  // Separate existing points into same-cluster and outside
+  const inCluster = [], outside = [];
+  for (const p of calPoints) {
+    (distMetres(p.raw, newPt.raw) < CLUSTER_DIST &&
+     Math.abs(p.timestamp - newPt.timestamp) < CLUSTER_TIME
+      ? inCluster : outside).push(p);
+  }
+
+  // Best representative for this cluster position
   const best = [...inCluster, newPt].reduce((a, b) =>
     pointQuality(a) >= pointQuality(b) ? a : b);
+
+  // Outlier check: when ≥3 outside points exist, build a model from them and
+  // reject if the candidate deviates more than max(3×RMSE, 30 m).
+  if (outside.length >= 3) {
+    const tRef = fitFromPoints(outside);
+    const predicted = applyTransform(tRef, best.raw);
+    const residualM = distMetres(predicted, best.map);
+    const threshold = Math.max(3 * rmseMetres(outside, tRef), 30);
+    if (residualM > threshold) return { residualM: Math.round(residualM) };
+  }
+
+  // Accepted — update pool and prune
   calPoints = [...outside, best];
-  // Prune to MAX_POINTS by quality
   if (calPoints.length > MAX_POINTS) {
     calPoints.sort((a, b) => pointQuality(a) - pointQuality(b));
     calPoints.splice(0, calPoints.length - MAX_POINTS);
   }
-}
-
-// Cached transform coefficients, recomputed whenever calPoints changes.
-let T = null;
-
-function fitTransform() {
-  const n = calPoints.length;
-  if (n === 0) { T = null; return; }
-
-  if (n === 1) {
-    T = { simple: true,
-          dLat: calPoints[0].map.lat - calPoints[0].raw.lat,
-          dLng: calPoints[0].map.lng - calPoints[0].raw.lng };
-    return;
-  }
-
-  // 1-D least squares: y = s*x + o  →  s = (n·Σxy - Σx·Σy) / (n·Σx² - (Σx)²)
-  function linreg(xs, ys) {
-    let sx = 0, sy = 0, sxx = 0, sxy = 0;
-    for (let i = 0; i < n; i++) { sx += xs[i]; sy += ys[i]; sxx += xs[i]*xs[i]; sxy += xs[i]*ys[i]; }
-    const denom = n * sxx - sx * sx;
-    const s = Math.abs(denom) > 1e-14 ? (n * sxy - sx * sy) / denom : 1;
-    const o = (sy - s * sx) / n;
-    return { s, o };
-  }
-
-  const rawLats = calPoints.map(p => p.raw.lat);
-  const rawLngs = calPoints.map(p => p.raw.lng);
-  const mapLats = calPoints.map(p => p.map.lat);
-  const mapLngs = calPoints.map(p => p.map.lng);
-
-  const lat = linreg(rawLats, mapLats);
-  const lng = linreg(rawLngs, mapLngs);
-  T = { simple: false, sLat: lat.s, oLat: lat.o, sLng: lng.s, oLng: lng.o };
-}
-
-fitTransform();
-
-function toDisplay(raw) {
-  if (!T) return L.latLng(raw.lat, raw.lng);
-  if (T.simple) return L.latLng(raw.lat + T.dLat, raw.lng + T.dLng);
-  return L.latLng(T.sLat * raw.lat + T.oLat, T.sLng * raw.lng + T.oLng);
+  return null;
 }
 
 function savePoints() {
@@ -385,12 +401,19 @@ document.getElementById('cal-btn').addEventListener('click', () => {
 
 document.getElementById('cal-set').addEventListener('click', () => {
   const centre = map.getCenter();
-  addPoint({
+  const rejected = tryAddPoint({
     raw:       { lat: rawGps.lat, lng: rawGps.lng },
     map:       { lat: centre.lat, lng: centre.lng },
     accuracy:  rawAccuracy,
     timestamp: Date.now()
   });
+
+  if (rejected) {
+    toast(`Outlier rejected (${rejected.residualM} m from model). ` +
+          `Check your position, or tap ↺ to reset and start fresh.`, 6000);
+    return;  // leave calibration panel open so the user can retry
+  }
+
   savePoints();
   fitTransform();
   updateBadge();
@@ -399,11 +422,9 @@ document.getElementById('cal-set').addEventListener('click', () => {
 
   const n = calPoints.length;
   const acc = Math.round(rawAccuracy);
-  if (n === 1) {
-    toast(`Point saved (±${acc} m). Add more from different spots for scale correction.`);
-  } else {
-    toast(`${n} calibration point${n > MAX_POINTS ? 's (oldest/worst dropped)' : 's'} · ±${acc} m`);
-  }
+  toast(n === 1
+    ? `Point saved (±${acc} m). Add more from different spots for scale correction.`
+    : `${n} calibration points · ±${acc} m`);
 });
 
 document.getElementById('cal-cancel').addEventListener('click', () => {
