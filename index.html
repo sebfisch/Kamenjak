@@ -191,7 +191,11 @@
 
 <script src="leaflet.js"></script>
 <script>
-const BOUNDS = [[44.708, 13.845], [44.843, 13.935]];
+// Longitude range is derived from the image pixel ratio (1536×2040 = 0.7529)
+// so that imageOverlay's rendered W:H in Web Mercator matches the photo exactly:
+//   dLng = imgRatio * dLat / cos(midLat)  →  0.7529 * 0.135 / cos(44.776°) = 0.1432
+// Latitude extent and centre are estimates; calibration handles GPS accuracy.
+const BOUNDS = [[44.708, 13.8184], [44.843, 13.9616]];
 
 // ── Calibration point quality ─────────────────────────────────────────────────
 // Keep at most MAX_POINTS. Each point is scored by:
