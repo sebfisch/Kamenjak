@@ -10,55 +10,10 @@
     html, body, #map { height: 100%; width: 100%; margin: 0; padding: 0; }
     body { background: #1a5276; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; overflow: hidden; }
 
-    /* ── GPS button ── */
-    #gps-btn {
-      position: fixed;
-      bottom: 24px;
-      right: 16px;
-      z-index: 1000;
-      width: 56px;
-      height: 56px;
-      border-radius: 50%;
-      border: none;
-      background: #2196F3;
-      color: white;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.45);
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: background 0.15s, transform 0.1s;
-      -webkit-tap-highlight-color: transparent;
-      touch-action: manipulation;
-    }
-    #gps-btn.active  { background: #0d47a1; }
-    #gps-btn:active  { transform: scale(0.92); }
-    #gps-btn svg { width: 26px; height: 26px; fill: white; }
-
-    /* ── Status toast ── */
-    #toast {
-      position: fixed;
-      bottom: 96px;
-      left: 50%;
-      transform: translateX(-50%);
-      z-index: 1000;
-      background: rgba(0,0,0,0.78);
-      color: white;
-      padding: 7px 16px;
-      border-radius: 20px;
-      font-size: 13px;
-      white-space: nowrap;
-      opacity: 0;
-      transition: opacity 0.25s;
-      pointer-events: none;
-    }
-    #toast.show { opacity: 1; }
-
-    /* ── Loading badge (corner, non-blocking) ── */
+    /* ── Loading badge ── */
     #loader {
       position: fixed;
-      top: 12px;
-      left: 50%;
+      top: 12px; left: 50%;
       transform: translateX(-50%);
       z-index: 2000;
       background: rgba(0,0,0,0.72);
@@ -66,9 +21,7 @@
       font-size: 13px;
       padding: 6px 14px 6px 10px;
       border-radius: 20px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
+      display: flex; align-items: center; gap: 8px;
       transition: opacity 0.4s;
       pointer-events: none;
     }
@@ -83,22 +36,67 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* ── Location dot icon ── */
-    .loc-wrap {
-      position: relative;
-      width: 20px; height: 20px;
+    /* ── Toast ── */
+    #toast {
+      position: fixed;
+      bottom: 100px; left: 50%;
+      transform: translateX(-50%);
+      z-index: 1500;
+      background: rgba(0,0,0,0.78);
+      color: white;
+      padding: 7px 16px;
+      border-radius: 20px;
+      font-size: 13px;
+      white-space: nowrap;
+      opacity: 0;
+      transition: opacity 0.25s;
+      pointer-events: none;
     }
+    #toast.show { opacity: 1; }
+
+    /* ── Floating action buttons (stacked bottom-right) ── */
+    .fab {
+      position: fixed;
+      right: 16px;
+      z-index: 1000;
+      border: none;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: transform 0.1s;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+    }
+    .fab:active { transform: scale(0.91); }
+
+    #gps-btn {
+      bottom: 24px;
+      width: 56px; height: 56px;
+      background: #2196F3;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.45);
+    }
+    #gps-btn.active { background: #0d47a1; }
+    #gps-btn svg { width: 26px; height: 26px; fill: white; }
+
+    #cal-btn {
+      bottom: 92px;
+      width: 44px; height: 44px;
+      background: white;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+    #cal-btn svg { width: 22px; height: 22px; fill: #444; }
+
+    /* ── Location dot ── */
+    .loc-wrap { position: relative; width: 20px; height: 20px; }
     .loc-dot {
-      position: absolute;
-      inset: 2px;
+      position: absolute; inset: 2px;
       background: #2196F3;
       border: 3px solid white;
       border-radius: 50%;
       box-shadow: 0 2px 8px rgba(0,0,0,0.5);
     }
     .loc-ring {
-      position: absolute;
-      inset: -8px;
+      position: absolute; inset: -8px;
       border-radius: 50%;
       background: rgba(33,150,243,0.28);
       animation: locpulse 2.2s ease-out infinite;
@@ -107,83 +105,159 @@
       0%   { transform: scale(0.5); opacity: 0.9; }
       100% { transform: scale(2);   opacity: 0;   }
     }
+
+    /* ── Calibration mode ── */
+    /* All children are pointer-events:none except the banner and bottom bar,
+       so the map beneath remains pannable during calibration. */
+    #cal-ui {
+      display: none;
+      position: fixed; inset: 0;
+      z-index: 1200;
+      pointer-events: none;
+    }
+    #cal-ui.active { display: block; }
+
+    #cal-banner {
+      pointer-events: auto;
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      background: rgba(0,0,0,0.82);
+      color: white;
+      text-align: center;
+      padding: 14px 20px;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+
+    /* Fixed crosshair in the exact screen centre */
+    #cal-cross {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 54px; height: 54px;
+    }
+    #cal-cross::before, #cal-cross::after {
+      content: '';
+      position: absolute;
+      background: rgba(220, 50, 50, 0.95);
+      border-radius: 1px;
+    }
+    #cal-cross::before { width: 100%; height: 2px; top: 50%; transform: translateY(-50%); }
+    #cal-cross::after  { width: 2px; height: 100%; left: 50%; transform: translateX(-50%); }
+
+    /* Centre dot */
+    #cal-cross-dot {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 8px; height: 8px;
+      background: rgba(220,50,50,0.95);
+      border-radius: 50%;
+    }
+
+    #cal-bar {
+      pointer-events: auto;
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      display: flex; gap: 10px;
+      padding: 14px 16px;
+      background: rgba(0,0,0,0.82);
+    }
+    .cal-action {
+      flex: 1; padding: 14px 0;
+      border: none; border-radius: 10px;
+      font-size: 16px; font-weight: 600;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    #cal-cancel  { background: rgba(255,255,255,0.15); color: white; }
+    #cal-confirm { background: #2196F3; color: white; }
   </style>
 </head>
 <body>
 
-<div id="loader">
-  <div class="spinner"></div>
-  <span>Loading map…</span>
-</div>
+<div id="loader"><div class="spinner"></div><span>Loading map…</span></div>
 
 <div id="map"></div>
 
-<!-- GPS crosshair icon -->
-<button id="gps-btn" title="Show my location">
-  <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-    <path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94
-             3c-.46-4.17-3.77-7.48-7.94-7.94V1h-2v2.06C6.83 3.52 3.52 6.83
-             3.06 11H1v2h2.06c.46 4.17 3.77 7.48 7.94 7.94V23h2v-2.06
-             c4.17-.46 7.48-3.77 7.94-7.94H23v-2h-2.06zM12 19c-3.87
-             0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/>
-  </svg>
+<!-- GPS button -->
+<button id="gps-btn" class="fab" title="Show my location">
+  <svg viewBox="0 0 24 24"><path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79
+    4-4-1.79-4-4-4zm8.94 3c-.46-4.17-3.77-7.48-7.94-7.94V1h-2v2.06C6.83 3.52
+    3.52 6.83 3.06 11H1v2h2.06c.46 4.17 3.77 7.48 7.94 7.94V23h2v-2.06
+    c4.17-.46 7.48-3.77 7.94-7.94H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7
+    7-7 7 3.13 7 7-3.13 7-7 7z"/></svg>
 </button>
+
+<!-- Calibrate button -->
+<button id="cal-btn" class="fab" title="Calibrate map position">
+  <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10
+    10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93
+    0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54
+    c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0
+    1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41
+    0 2.08-.8 3.97-2.1 5.39z"/></svg>
+</button>
+
+<!-- Calibration UI (crosshair + banner + confirm bar) -->
+<div id="cal-ui">
+  <div id="cal-banner">Pan the map so the crosshair ✛ is exactly on your position, then tap Confirm</div>
+  <div id="cal-cross"><div id="cal-cross-dot"></div></div>
+  <div id="cal-bar">
+    <button class="cal-action" id="cal-cancel">Cancel</button>
+    <button class="cal-action" id="cal-confirm">Confirm</button>
+  </div>
+</div>
 
 <div id="toast"></div>
 
 <script src="leaflet.js"></script>
 <script>
-// ── Geographic bounds of the map photo (Rt Kamenjak, Croatia) ──────────────
-// These register the photo over real GPS coordinates so the locate dot
-// lands in the right place. Tune by adjusting SW/NE if the dot drifts.
 const BOUNDS = [
-  [44.708, 13.845],   // SW — image bottom-left  [lat, lng]
-  [44.843, 13.935]    // NE — image top-right
+  [44.708, 13.845],  // SW  [lat, lng]
+  [44.843, 13.935]   // NE
 ];
 
 const map = L.map('map', {
-  minZoom: 12,
-  maxZoom: 19,
+  minZoom: 12, maxZoom: 19,
   attributionControl: false,
   zoomControl: true
 });
 map.zoomControl.setPosition('bottomleft');
-
-// Fit bounds before image loads so the view is ready
 map.fitBounds(BOUNDS);
 
-// ── Map photo overlay ──────────────────────────────────────────────────────
-// Preload via native Image so onload/onerror fire reliably, then hand
-// the (now-cached) src to Leaflet which won't need to re-fetch it.
-function hideLoader() {
-  document.getElementById('loader').classList.add('gone');
-}
-
+// ── Map image ────────────────────────────────────────────────────────────────
+function hideLoader() { document.getElementById('loader').classList.add('gone'); }
 const preload = new Image();
-preload.onload  = () => { hideLoader(); };
+preload.onload  = hideLoader;
 preload.onerror = () => {
   const el = document.getElementById('loader');
   el.querySelector('span').textContent = 'Could not load map image';
   el.querySelector('.spinner').style.display = 'none';
 };
-// Failsafe: hide loader after 12 s even if events don't fire
 setTimeout(hideLoader, 12000);
 preload.src = 'map.jpg';
-
 L.imageOverlay('map.jpg', BOUNDS).addTo(map);
 
-// ── GPS tracking ───────────────────────────────────────────────────────────
+// ── Calibration offset (persisted) ──────────────────────────────────────────
+let offset = { lat: 0, lng: 0 };
+try { const s = localStorage.getItem('kmap-offset'); if (s) offset = JSON.parse(s); } catch (_) {}
+
+function toDisplay(raw) {
+  return L.latLng(raw.lat + offset.lat, raw.lng + offset.lng);
+}
+
+// ── GPS tracking ─────────────────────────────────────────────────────────────
+let rawGps        = null;   // last raw fix, needed for calibration
 let userMarker    = null;
-let accuracyCircle = null;
+let accCircle     = null;
 let tracking      = false;
 let followMode    = false;
 let toastTimer    = null;
 
 const locIcon = L.divIcon({
   html: '<div class="loc-wrap"><div class="loc-ring"></div><div class="loc-dot"></div></div>',
-  iconSize:   [20, 20],
-  iconAnchor: [10, 10],
-  className:  ''
+  iconSize: [20, 20], iconAnchor: [10, 10], className: ''
 });
 
 function toast(msg, duration = 3500) {
@@ -195,55 +269,70 @@ function toast(msg, duration = 3500) {
 }
 
 map.on('locationfound', (e) => {
-  const { latlng, accuracy } = e;
+  rawGps = e.latlng;
+  const pos = toDisplay(rawGps);
 
   if (!userMarker) {
-    accuracyCircle = L.circle(latlng, {
-      radius: accuracy,
+    accCircle = L.circle(pos, {
+      radius: e.accuracy,
       color: '#2196F3', weight: 1,
       fillColor: '#2196F3', fillOpacity: 0.10,
       interactive: false
     }).addTo(map);
-    userMarker = L.marker(latlng, { icon: locIcon, zIndexOffset: 1000 }).addTo(map);
-    toast(`Located · ±${Math.round(accuracy)} m`);
+    userMarker = L.marker(pos, { icon: locIcon, zIndexOffset: 1000 }).addTo(map);
+    toast(`Located · ±${Math.round(e.accuracy)} m`);
   } else {
-    userMarker.setLatLng(latlng);
-    accuracyCircle.setLatLng(latlng).setRadius(accuracy);
+    userMarker.setLatLng(pos);
+    accCircle.setLatLng(pos).setRadius(e.accuracy);
   }
 
-  if (followMode) {
-    map.setView(latlng, Math.max(map.getZoom(), 15));
-  }
+  if (followMode) map.setView(pos, Math.max(map.getZoom(), 15));
 });
 
 map.on('locationerror', (e) => {
   toast('Location error: ' + e.message);
   document.getElementById('gps-btn').classList.remove('active');
-  tracking = false;
-  followMode = false;
+  tracking = followMode = false;
 });
 
-// Panning breaks follow mode so the user can freely browse the map
 map.on('dragstart', () => { followMode = false; });
 
-// ── GPS button ─────────────────────────────────────────────────────────────
 document.getElementById('gps-btn').addEventListener('click', () => {
-  const btn = document.getElementById('gps-btn');
-
   if (!tracking) {
-    // First tap: start watching GPS
     map.locate({ watch: true, enableHighAccuracy: true, maximumAge: 5000 });
-    tracking   = true;
-    followMode = true;
-    btn.classList.add('active');
+    tracking = followMode = true;
+    document.getElementById('gps-btn').classList.add('active');
     toast('Finding your location…', 0);
   } else {
-    // Subsequent taps: re-enable follow mode and jump to position
     followMode = true;
-    if (userMarker) {
-      map.setView(userMarker.getLatLng(), Math.max(map.getZoom(), 15));
-    }
+    if (userMarker) map.setView(userMarker.getLatLng(), Math.max(map.getZoom(), 15));
   }
+});
+
+// ── Calibration ──────────────────────────────────────────────────────────────
+const calUI = document.getElementById('cal-ui');
+
+document.getElementById('cal-btn').addEventListener('click', () => {
+  if (!rawGps) { toast('Enable GPS first, then calibrate'); return; }
+  // Centre the map on the current (offset-applied) position so the crosshair
+  // starts right on the dot — the user just nudges from there.
+  map.setView(toDisplay(rawGps), Math.max(map.getZoom(), 15));
+  calUI.classList.add('active');
+});
+
+document.getElementById('cal-confirm').addEventListener('click', () => {
+  const centre = map.getCenter();
+  offset = { lat: centre.lat - rawGps.lat, lng: centre.lng - rawGps.lng };
+  try { localStorage.setItem('kmap-offset', JSON.stringify(offset)); } catch (_) {}
+  calUI.classList.remove('active');
+  // Move the dot to the confirmed position immediately
+  const pos = toDisplay(rawGps);
+  if (userMarker) { userMarker.setLatLng(pos); accCircle.setLatLng(pos); }
+  toast('Calibration saved');
+});
+
+document.getElementById('cal-cancel').addEventListener('click', () => {
+  calUI.classList.remove('active');
 });
 </script>
 </body>
