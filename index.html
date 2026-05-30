@@ -12,12 +12,9 @@
 
     /* ── Loading badge ── */
     #loader {
-      position: fixed; top: 12px; left: 50%;
-      transform: translateX(-50%);
-      z-index: 2000;
-      background: rgba(0,0,0,0.72); color: white;
-      font-size: 13px; padding: 6px 14px 6px 10px;
-      border-radius: 20px;
+      position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+      z-index: 2000; background: rgba(0,0,0,0.72); color: white;
+      font-size: 13px; padding: 6px 14px 6px 10px; border-radius: 20px;
       display: flex; align-items: center; gap: 8px;
       transition: opacity 0.4s; pointer-events: none;
     }
@@ -31,13 +28,10 @@
 
     /* ── Toast ── */
     #toast {
-      position: fixed; bottom: 100px; left: 50%;
-      transform: translateX(-50%);
-      z-index: 1500;
-      background: rgba(0,0,0,0.78); color: white;
-      padding: 7px 16px; border-radius: 20px;
-      font-size: 13px; text-align: center;
-      max-width: calc(100vw - 96px);
+      position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%);
+      z-index: 1500; background: rgba(0,0,0,0.78); color: white;
+      padding: 7px 16px; border-radius: 20px; font-size: 13px;
+      text-align: center; max-width: calc(100vw - 96px);
       white-space: normal; line-height: 1.4;
       opacity: 0; transition: opacity 0.25s; pointer-events: none;
     }
@@ -46,8 +40,7 @@
     /* ── FABs ── */
     .fab {
       position: fixed; right: 16px; z-index: 1000;
-      border: none; border-radius: 50%;
-      cursor: pointer;
+      border: none; border-radius: 50%; cursor: pointer;
       display: flex; align-items: center; justify-content: center;
       transition: transform 0.1s;
       -webkit-tap-highlight-color: transparent; touch-action: manipulation;
@@ -56,36 +49,34 @@
 
     #gps-btn {
       bottom: 24px; width: 56px; height: 56px;
-      background: #2196F3;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.45);
+      background: #2196F3; box-shadow: 0 4px 12px rgba(0,0,0,0.45);
     }
     #gps-btn.active { background: #0d47a1; }
     #gps-btn svg { width: 26px; height: 26px; fill: white; }
 
     #cal-btn {
       bottom: 92px; width: 44px; height: 44px;
-      background: white;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      background: white; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
     }
     #cal-btn svg { width: 22px; height: 22px; fill: #444; }
-    /* badge shows calibration state */
-    #cal-badge {
-      position: absolute; top: -2px; right: -2px;
-      width: 16px; height: 16px;
-      border-radius: 50%; border: 2px solid white;
-      font-size: 9px; font-weight: 700; color: white;
-      display: flex; align-items: center; justify-content: center;
-      display: none;
+
+    /* point-count badge */
+    #cal-count {
+      position: absolute; top: -3px; right: -3px;
+      min-width: 17px; height: 17px; padding: 0 3px;
+      border-radius: 9px; border: 2px solid white;
+      font-size: 10px; font-weight: 700; color: white;
+      display: none; align-items: center; justify-content: center;
     }
-    #cal-badge.p1 { background: #FF9800; display: flex; }
-    #cal-badge.p2 { background: #4CAF50; display: flex; }
+    #cal-count.one  { background: #FF9800; display: flex; }
+    #cal-count.many { background: #4CAF50; display: flex; }
 
     /* ── Location dot ── */
     .loc-wrap { position: relative; width: 20px; height: 20px; }
     .loc-dot {
-      position: absolute; inset: 2px;
-      background: #2196F3; border: 3px solid white;
-      border-radius: 50%; box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+      position: absolute; inset: 2px; background: #2196F3;
+      border: 3px solid white; border-radius: 50%;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.5);
     }
     .loc-ring {
       position: absolute; inset: -8px; border-radius: 50%;
@@ -97,9 +88,9 @@
       100% { transform: scale(2);   opacity: 0;   }
     }
 
-    /* ── Calibration overlay ──
-       pointer-events:none on the container lets the map pan freely.
-       Only the banner and bottom bar capture touches. */
+    /* ── Calibration overlay ──────────────────────────────────────────
+       Container is pointer-events:none so the map underneath stays
+       pannable. Only banner and bottom bar capture touches.           */
     #cal-ui {
       display: none; position: fixed; inset: 0;
       z-index: 1200; pointer-events: none;
@@ -110,12 +101,11 @@
       pointer-events: auto;
       position: absolute; top: 0; left: 0; right: 0;
       background: rgba(0,0,0,0.85); color: white;
-      padding: 14px 20px; font-size: 14px; line-height: 1.5;
+      padding: 12px 20px; font-size: 14px; line-height: 1.5;
       text-align: center;
     }
-    #cal-banner strong { display: block; font-size: 15px; margin-bottom: 4px; }
 
-    /* Fixed crosshair — always screen-centre */
+    /* Fixed crosshair — always at screen centre, never moves */
     #cal-cross {
       position: absolute; top: 50%; left: 50%;
       transform: translate(-50%, -50%);
@@ -130,7 +120,8 @@
     #cal-cross-dot {
       position: absolute; top: 50%; left: 50%;
       transform: translate(-50%,-50%);
-      width: 8px; height: 8px; background: rgba(220,50,50,0.95); border-radius: 50%;
+      width: 8px; height: 8px;
+      background: rgba(220,50,50,0.95); border-radius: 50%;
     }
 
     #cal-bar {
@@ -140,17 +131,16 @@
       background: rgba(0,0,0,0.85);
     }
     .cal-action {
-      flex: 1; padding: 14px 0;
-      border: none; border-radius: 10px;
+      flex: 1; padding: 14px 0; border: none; border-radius: 10px;
       font-size: 16px; font-weight: 600;
       cursor: pointer; touch-action: manipulation;
     }
     #cal-cancel  { background: rgba(255,255,255,0.15); color: white; }
-    #cal-confirm { background: #2196F3; color: white; }
+    #cal-set     { background: #2196F3; color: white; }
     #cal-reset   {
-      flex: 0 0 auto; width: 48px;
+      flex: 0 0 auto; width: 48px; padding: 0;
       background: rgba(255,80,80,0.25); color: #ff8080;
-      font-size: 20px; padding: 0;
+      font-size: 20px;
     }
   </style>
 </head>
@@ -167,26 +157,23 @@
     0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></svg>
 </button>
 
-<button id="cal-btn" class="fab" title="Calibrate">
+<button id="cal-btn" class="fab" title="Calibrate location">
   <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10
     10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93
     0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54
     c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0
     1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41
     0 2.08-.8 3.97-2.1 5.39z"/></svg>
-  <span id="cal-badge"></span>
+  <span id="cal-count"></span>
 </button>
 
 <div id="cal-ui">
-  <div id="cal-banner">
-    <strong id="cal-title"></strong>
-    <span id="cal-desc"></span>
-  </div>
+  <div id="cal-banner">Pan map so ✛ is exactly on your position, then tap <strong>Set point</strong></div>
   <div id="cal-cross"><div id="cal-cross-dot"></div></div>
   <div id="cal-bar">
     <button class="cal-action" id="cal-cancel">Cancel</button>
-    <button class="cal-action" id="cal-confirm">Confirm</button>
-    <button class="cal-action" id="cal-reset" title="Reset calibration">↺</button>
+    <button class="cal-action" id="cal-set">Set point</button>
+    <button class="cal-action" id="cal-reset" title="Clear all calibration points">↺</button>
   </div>
 </div>
 
@@ -194,9 +181,9 @@
 
 <script src="leaflet.js"></script>
 <script>
-// Approximate bounds — only used for initial view framing.
-// Actual GPS positioning uses the two-point calibration transform,
-// so errors here only affect how the initial map is centred, not accuracy.
+// Approximate image bounds — used only to frame the initial view.
+// All GPS positioning goes through the calibration transform, so
+// errors here only affect the starting pan position, not accuracy.
 const BOUNDS = [[44.708, 13.845], [44.843, 13.935]];
 
 const map = L.map('map', {
@@ -219,54 +206,76 @@ setTimeout(hideLoader, 12000);
 preload.src = 'map.jpg';
 L.imageOverlay('map.jpg', BOUNDS).addTo(map);
 
-// ── Two-point calibration ────────────────────────────────────────────────────
+// ── Calibration: N-point least-squares ───────────────────────────────────────
 //
-// We store two anchor points, each pairing a raw GPS fix with the map
-// position the user confirmed (the screen-centre when they tapped Confirm).
+// Each calibration point pairs a raw GPS fix with the map position the user
+// confirmed (the screen centre when they tapped "Set point"):
+//   { raw: {lat, lng}, map: {lat, lng} }
 //
-//   p1, p2: { raw: {lat,lng}, map: {lat,lng} }
+// With 1 point  → translation only (offset).
+// With 2+ points → independent 1-D linear regression for lat and lng:
 //
-// With two points we solve for independent lat/lng scale factors:
-//   sLat = (p2.map.lat - p1.map.lat) / (p2.raw.lat - p1.raw.lat)
-//   sLng = (p2.map.lng - p1.map.lng) / (p2.raw.lng - p1.raw.lng)
+//   map_lat = sLat * raw_lat + oLat        (least-squares fit over all points)
+//   map_lng = sLng * raw_lng + oLng
 //
-// Then any raw GPS → display:
-//   displayLat = p1.map.lat + sLat * (raw.lat - p1.raw.lat)
-//   displayLng = p1.map.lng + sLng * (raw.lng - p1.raw.lng)
-//
-// With only p1 we fall back to translation-only (offset).
+// More points average out GPS noise and improve the scale estimate.
 
-let cal = { p1: null, p2: null };
-try { const s = localStorage.getItem('kmap-cal2'); if (s) cal = JSON.parse(s); } catch (_) {}
+let calPoints = [];
+try { const s = localStorage.getItem('kmap-pts'); if (s) calPoints = JSON.parse(s); } catch (_) {}
+
+// Cached transform coefficients, recomputed whenever calPoints changes.
+let T = null;
+
+function fitTransform() {
+  const n = calPoints.length;
+  if (n === 0) { T = null; return; }
+
+  if (n === 1) {
+    T = { simple: true,
+          dLat: calPoints[0].map.lat - calPoints[0].raw.lat,
+          dLng: calPoints[0].map.lng - calPoints[0].raw.lng };
+    return;
+  }
+
+  // 1-D least squares: y = s*x + o  →  s = (n·Σxy - Σx·Σy) / (n·Σx² - (Σx)²)
+  function linreg(xs, ys) {
+    let sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (let i = 0; i < n; i++) { sx += xs[i]; sy += ys[i]; sxx += xs[i]*xs[i]; sxy += xs[i]*ys[i]; }
+    const denom = n * sxx - sx * sx;
+    const s = Math.abs(denom) > 1e-14 ? (n * sxy - sx * sy) / denom : 1;
+    const o = (sy - s * sx) / n;
+    return { s, o };
+  }
+
+  const rawLats = calPoints.map(p => p.raw.lat);
+  const rawLngs = calPoints.map(p => p.raw.lng);
+  const mapLats = calPoints.map(p => p.map.lat);
+  const mapLngs = calPoints.map(p => p.map.lng);
+
+  const lat = linreg(rawLats, mapLats);
+  const lng = linreg(rawLngs, mapLngs);
+  T = { simple: false, sLat: lat.s, oLat: lat.o, sLng: lng.s, oLng: lng.o };
+}
+
+fitTransform();
 
 function toDisplay(raw) {
-  const { p1, p2 } = cal;
-  if (!p1) return L.latLng(raw.lat, raw.lng);
-  if (!p2) {
-    // translation only
-    return L.latLng(raw.lat + (p1.map.lat - p1.raw.lat),
-                    raw.lng + (p1.map.lng - p1.raw.lng));
-  }
-  // scale + translation
-  const dRawLat = p2.raw.lat - p1.raw.lat;
-  const dRawLng = p2.raw.lng - p1.raw.lng;
-  const sLat = Math.abs(dRawLat) > 1e-7 ? (p2.map.lat - p1.map.lat) / dRawLat : 1;
-  const sLng = Math.abs(dRawLng) > 1e-7 ? (p2.map.lng - p1.map.lng) / dRawLng : 1;
-  return L.latLng(p1.map.lat + sLat * (raw.lat - p1.raw.lat),
-                  p1.map.lng + sLng * (raw.lng - p1.raw.lng));
+  if (!T) return L.latLng(raw.lat, raw.lng);
+  if (T.simple) return L.latLng(raw.lat + T.dLat, raw.lng + T.dLng);
+  return L.latLng(T.sLat * raw.lat + T.oLat, T.sLng * raw.lng + T.oLng);
 }
 
-function saveCal() {
-  try { localStorage.setItem('kmap-cal2', JSON.stringify(cal)); } catch (_) {}
+function savePoints() {
+  try { localStorage.setItem('kmap-pts', JSON.stringify(calPoints)); } catch (_) {}
 }
 
-function updateCalBadge() {
-  const b = document.getElementById('cal-badge');
-  b.className = '';
-  if (cal.p2) { b.textContent = '2'; b.className = 'p2'; }
-  else if (cal.p1) { b.textContent = '1'; b.className = 'p1'; }
+function updateBadge() {
+  const el = document.getElementById('cal-count');
+  const n  = calPoints.length;
+  el.textContent = n || '';
+  el.className   = n >= 2 ? 'many' : n === 1 ? 'one' : '';
 }
-updateCalBadge();
+updateBadge();
 
 // ── GPS tracking ─────────────────────────────────────────────────────────────
 let rawGps = null, userMarker = null, accCircle = null;
@@ -285,7 +294,7 @@ function toast(msg, duration = 4000) {
   if (duration > 0) toastTimer = setTimeout(() => el.classList.remove('show'), duration);
 }
 
-function updateMarker() {
+function refreshMarker() {
   if (!rawGps || !userMarker) return;
   const pos = toDisplay(rawGps);
   userMarker.setLatLng(pos);
@@ -330,58 +339,29 @@ document.getElementById('gps-btn').addEventListener('click', () => {
 });
 
 // ── Calibration UI ───────────────────────────────────────────────────────────
-const calUI    = document.getElementById('cal-ui');
-const calTitle = document.getElementById('cal-title');
-const calDesc  = document.getElementById('cal-desc');
-let calStep = 0;  // 1 = setting p1, 2 = setting p2
+const calUI = document.getElementById('cal-ui');
 
-function openCalibration() {
+document.getElementById('cal-btn').addEventListener('click', () => {
   if (!rawGps) { toast('Enable GPS first, then calibrate.'); return; }
-
-  // Decide which step we're on
-  calStep = cal.p1 ? 2 : 1;
-
-  if (calStep === 1) {
-    calTitle.textContent = 'Calibration — point 1 of 2';
-    calDesc.textContent  = 'Pan the map so the crosshair ✛ is exactly on your current position, then tap Confirm.';
-  } else {
-    calTitle.textContent = 'Calibration — point 2 of 2';
-    calDesc.textContent  = 'You must be at a different location now. Pan so ✛ is on your position, then tap Confirm.';
-  }
-
-  // Centre on the current best-guess position so the user only has to nudge
   map.setView(toDisplay(rawGps), Math.max(map.getZoom(), 15));
   calUI.classList.add('active');
-}
+});
 
-document.getElementById('cal-btn').addEventListener('click', openCalibration);
-
-document.getElementById('cal-confirm').addEventListener('click', () => {
+document.getElementById('cal-set').addEventListener('click', () => {
   const centre = map.getCenter();
-  const point  = { raw: { lat: rawGps.lat, lng: rawGps.lng },
-                   map: { lat: centre.lat,  lng: centre.lng  } };
+  calPoints.push({ raw: { lat: rawGps.lat, lng: rawGps.lng },
+                   map: { lat: centre.lat,  lng: centre.lng  } });
+  savePoints();
+  fitTransform();
+  updateBadge();
+  calUI.classList.remove('active');
+  refreshMarker();
 
-  if (calStep === 1) {
-    cal.p1 = point;
-    cal.p2 = null;
-    saveCal();
-    calUI.classList.remove('active');
-    updateCalBadge();
-    toast('Point 1 saved. Walk to a clearly identifiable second spot on the map, then tap the calibrate button again.');
+  const n = calPoints.length;
+  if (n === 1) {
+    toast('Point 1 saved. Add more points from different locations for better accuracy.');
   } else {
-    // Sanity-check: p2 raw must differ meaningfully from p1 raw
-    const dLat = Math.abs(point.raw.lat - cal.p1.raw.lat);
-    const dLng = Math.abs(point.raw.lng - cal.p1.raw.lng);
-    if (dLat < 5e-5 && dLng < 5e-5) {   // < ~5 m apart
-      toast('You appear to be in the same spot as point 1. Move to a different location first.');
-      return;
-    }
-    cal.p2 = point;
-    saveCal();
-    calUI.classList.remove('active');
-    updateCalBadge();
-    updateMarker();
-    toast('Calibration complete — scale and position are now corrected.');
+    toast(`${n} calibration points — scale and offset updated.`);
   }
 });
 
@@ -390,12 +370,13 @@ document.getElementById('cal-cancel').addEventListener('click', () => {
 });
 
 document.getElementById('cal-reset').addEventListener('click', () => {
-  cal = { p1: null, p2: null };
-  saveCal();
+  calPoints = [];
+  savePoints();
+  fitTransform();
+  updateBadge();
   calUI.classList.remove('active');
-  updateCalBadge();
-  updateMarker();
-  toast('Calibration cleared.');
+  refreshMarker();
+  toast('All calibration points cleared.');
 });
 </script>
 </body>
