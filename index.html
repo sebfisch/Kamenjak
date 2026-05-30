@@ -188,12 +188,21 @@ const BOUNDS = [[44.708, 13.845], [44.843, 13.935]];
 //   quality = exp(−age / RECENCY_TAU) / accuracy_metres
 // i.e. recent + precise = high score.  When the pool exceeds MAX_POINTS the
 // lowest-scoring point is dropped, so the set self-prunes toward the best data.
-const MAX_POINTS  = 20;
-const RECENCY_TAU = 3 * 24 * 60 * 60 * 1000; // 3-day half-life in ms
+const MAX_POINTS   = 5;
+const RECENCY_TAU  = 2 * 60 * 60 * 1000;  // 2-hour half-life
+const CLUSTER_DIST = 25;                   // metres — same-spot threshold
+const CLUSTER_TIME = 10 * 60 * 1000;       // 10 minutes
 
 function pointQuality(pt) {
   const age = Date.now() - pt.timestamp;
   return Math.exp(-age / RECENCY_TAU) / pt.accuracy;
+}
+
+function distMetres(a, b) {
+  const dLat = (b.lat - a.lat) * Math.PI / 180;
+  const dLng = (b.lng - a.lng) * Math.PI / 180;
+  const midLat = (a.lat + b.lat) / 2 * Math.PI / 180;
+  return Math.sqrt(dLat * dLat + Math.pow(dLng * Math.cos(midLat), 2)) * 6371000;
 }
 
 const map = L.map('map', {
@@ -224,10 +233,25 @@ L.imageOverlay('map.jpg', BOUNDS).addTo(map);
 let calPoints = [];
 try { const s = localStorage.getItem('kmap-pts'); if (s) calPoints = JSON.parse(s); } catch (_) {}
 
-function prunePoints() {
-  if (calPoints.length <= MAX_POINTS) return;
-  calPoints.sort((a, b) => pointQuality(a) - pointQuality(b)); // worst first
-  calPoints.splice(0, calPoints.length - MAX_POINTS);
+function addPoint(newPt) {
+  // Within a spatio-temporal cluster keep only the single best point.
+  const inCluster = [];
+  const outside   = calPoints.filter(p => {
+    if (distMetres(p.raw, newPt.raw) < CLUSTER_DIST &&
+        Math.abs(p.timestamp - newPt.timestamp) < CLUSTER_TIME) {
+      inCluster.push(p); return false;
+    }
+    return true;
+  });
+  // Pick the winner from cluster + newcomer
+  const best = [...inCluster, newPt].reduce((a, b) =>
+    pointQuality(a) >= pointQuality(b) ? a : b);
+  calPoints = [...outside, best];
+  // Prune to MAX_POINTS by quality
+  if (calPoints.length > MAX_POINTS) {
+    calPoints.sort((a, b) => pointQuality(a) - pointQuality(b));
+    calPoints.splice(0, calPoints.length - MAX_POINTS);
+  }
 }
 
 // Cached transform coefficients, recomputed whenever calPoints changes.
@@ -361,13 +385,12 @@ document.getElementById('cal-btn').addEventListener('click', () => {
 
 document.getElementById('cal-set').addEventListener('click', () => {
   const centre = map.getCenter();
-  calPoints.push({
+  addPoint({
     raw:       { lat: rawGps.lat, lng: rawGps.lng },
     map:       { lat: centre.lat, lng: centre.lng },
     accuracy:  rawAccuracy,
     timestamp: Date.now()
   });
-  prunePoints();
   savePoints();
   fitTransform();
   updateBadge();
