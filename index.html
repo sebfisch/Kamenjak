@@ -453,10 +453,14 @@ document.getElementById('gps-btn').addEventListener('click', () => {
     map.locate({ watch: true, enableHighAccuracy: true, maximumAge: 5000 });
     tracking = followMode = true;
     document.getElementById('gps-btn').classList.add('active');
-    toast('Finding your location…', 0);
-  } else {
+    toast('GPS started — calibrate to show your position', 4000);
+  } else if (markerOnMap) {
     followMode = true;
-    if (userMarker) map.setView(userMarker.getLatLng(), Math.max(map.getZoom(), 15));
+    map.setView(userMarker.getLatLng(), Math.max(map.getZoom(), 15));
+  } else {
+    toast(calPoints.length === 0
+      ? 'Calibrate first to show your position on the map.'
+      : 'Your position is currently outside the map.', 4000);
   }
 });
 
