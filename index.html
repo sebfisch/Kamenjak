@@ -56,28 +56,32 @@
     }
     #toast.show { opacity: 1; }
 
-    /* ── Loading overlay ── */
-    #loading {
+    /* ── Loading badge (corner, non-blocking) ── */
+    #loader {
       position: fixed;
-      inset: 0;
-      background: rgba(26,82,118,0.88);
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
       z-index: 2000;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 14px;
+      background: rgba(0,0,0,0.72);
       color: white;
-      font-size: 15px;
-      transition: opacity 0.35s;
+      font-size: 13px;
+      padding: 6px 14px 6px 10px;
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: opacity 0.4s;
+      pointer-events: none;
     }
-    #loading.gone { opacity: 0; pointer-events: none; }
+    #loader.gone { opacity: 0; }
     .spinner {
-      width: 28px; height: 28px;
-      border: 3px solid rgba(255,255,255,0.3);
+      width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,0.35);
       border-top-color: white;
       border-radius: 50%;
       animation: spin 0.75s linear infinite;
+      flex-shrink: 0;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -109,7 +113,7 @@
 </head>
 <body>
 
-<div id="loading">
+<div id="loader">
   <div class="spinner"></div>
   <span>Loading map…</span>
 </div>
@@ -153,18 +157,24 @@ map.zoomControl.setPosition('bottomleft');
 map.fitBounds(BOUNDS);
 
 // ── Map photo overlay ──────────────────────────────────────────────────────
-const overlay = L.imageOverlay('map.jpg', BOUNDS, { opacity: 1 });
+// Preload via native Image so onload/onerror fire reliably, then hand
+// the (now-cached) src to Leaflet which won't need to re-fetch it.
+function hideLoader() {
+  document.getElementById('loader').classList.add('gone');
+}
 
-overlay.on('load', () => {
-  document.getElementById('loading').classList.add('gone');
-});
-overlay.on('error', () => {
-  const loading = document.getElementById('loading');
-  loading.querySelector('span').textContent = 'Could not load map image.';
-  loading.querySelector('.spinner').style.display = 'none';
-});
+const preload = new Image();
+preload.onload  = () => { hideLoader(); };
+preload.onerror = () => {
+  const el = document.getElementById('loader');
+  el.querySelector('span').textContent = 'Could not load map image';
+  el.querySelector('.spinner').style.display = 'none';
+};
+// Failsafe: hide loader after 12 s even if events don't fire
+setTimeout(hideLoader, 12000);
+preload.src = 'map.jpg';
 
-overlay.addTo(map);
+L.imageOverlay('map.jpg', BOUNDS).addTo(map);
 
 // ── GPS tracking ───────────────────────────────────────────────────────────
 let userMarker    = null;
