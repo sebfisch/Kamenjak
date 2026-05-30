@@ -336,7 +336,7 @@ updateBadge();
 
 // ── GPS tracking ─────────────────────────────────────────────────────────────
 let rawGps = null, rawAccuracy = Infinity, lastFixTime = 0;
-let userMarker = null, accCircle = null;
+let userMarker = null, accCircle = null, markerOnMap = false;
 let tracking = false, followMode = false, toastTimer = null;
 
 const locIcon = L.divIcon({
@@ -352,11 +352,30 @@ function toast(msg, duration = 4000) {
   if (duration > 0) toastTimer = setTimeout(() => el.classList.remove('show'), duration);
 }
 
+// Show marker only when calibrated AND position is inside the image bounds.
+// Without calibration, raw GPS has no meaningful relationship to the image.
+function isWithinBounds(latlng) {
+  return latlng.lat >= BOUNDS[0][0] && latlng.lat <= BOUNDS[1][0]
+      && latlng.lng >= BOUNDS[0][1] && latlng.lng <= BOUNDS[1][1];
+}
+
+function updateLocation(pos, accuracy) {
+  const show = calPoints.length > 0 && isWithinBounds(pos);
+  if (!userMarker) {
+    accCircle  = L.circle(pos, { radius: accuracy, color: '#2196F3', weight: 1,
+                                  fillColor: '#2196F3', fillOpacity: 0.10, interactive: false });
+    userMarker = L.marker(pos, { icon: locIcon, zIndexOffset: 1000 });
+  } else {
+    userMarker.setLatLng(pos);
+    accCircle.setLatLng(pos).setRadius(accuracy);
+  }
+  if (show && !markerOnMap)  { accCircle.addTo(map); userMarker.addTo(map); markerOnMap = true;  }
+  if (!show && markerOnMap)  { map.removeLayer(accCircle); map.removeLayer(userMarker); markerOnMap = false; }
+  return show;
+}
+
 function refreshMarker() {
-  if (!rawGps || !userMarker) return;
-  const pos = toDisplay(rawGps);
-  userMarker.setLatLng(pos);
-  if (accCircle) accCircle.setLatLng(pos);
+  if (rawGps) updateLocation(toDisplay(rawGps), rawAccuracy);
 }
 
 // ── Calibration banner GPS status ticker ─────────────────────────────────────
@@ -412,19 +431,13 @@ map.on('locationfound', (e) => {
   rawAccuracy = e.accuracy;
   lastFixTime = Date.now();
   updateGpsStatus();
-  const pos = toDisplay(rawGps);
-  if (!userMarker) {
-    accCircle = L.circle(pos, {
-      radius: e.accuracy, color: '#2196F3', weight: 1,
-      fillColor: '#2196F3', fillOpacity: 0.10, interactive: false
-    }).addTo(map);
-    userMarker = L.marker(pos, { icon: locIcon, zIndexOffset: 1000 }).addTo(map);
-    toast(`Located · ±${Math.round(e.accuracy)} m`);
-  } else {
-    userMarker.setLatLng(pos);
-    accCircle.setLatLng(pos).setRadius(e.accuracy);
-  }
-  if (followMode) map.setView(pos, Math.max(map.getZoom(), 15));
+
+  const pos        = toDisplay(rawGps);
+  const wasVisible = markerOnMap;
+  const nowVisible = updateLocation(pos, e.accuracy);
+
+  if (nowVisible && !wasVisible) toast(`Located · ±${Math.round(e.accuracy)} m`);
+  if (followMode && markerOnMap) map.setView(pos, Math.max(map.getZoom(), 15));
 });
 
 map.on('locationerror', (e) => {
