@@ -54,6 +54,14 @@
     #gps-btn.active { background: #0d47a1; }
     #gps-btn svg { width: 26px; height: 26px; fill: white; }
 
+    #acc-badge {
+      position: fixed; right: 16px; bottom: 90px;
+      z-index: 1000; font-size: 11px; font-weight: 600;
+      padding: 3px 8px; border-radius: 10px; color: white;
+      pointer-events: none; opacity: 0; transition: opacity 0.3s;
+    }
+    #acc-badge.visible { opacity: 1; }
+
     #cal-btn {
       bottom: 92px; width: 44px; height: 44px;
       background: white; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
@@ -161,6 +169,8 @@
 
 <div id="loader"><div class="spinner"></div><span>Loading map…</span></div>
 <div id="map"></div>
+
+<div id="acc-badge"></div>
 
 <button id="gps-btn" class="fab" title="My location">
   <svg viewBox="0 0 24 24"><path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4
@@ -502,7 +512,8 @@ function updateGpsStatus() {
   el.className = stale ? 'stale' : 'fresh';
 }
 
-// maximumAge:0 forces a fresh hardware GPS fix (same mechanism as Google Maps)
+// maximumAge:0 forces a fresh hardware GPS fix — nudges the platform's Fused
+// Location Provider to run a new WiFi scan cycle, same as Google Maps does.
 function requestFreshFix() {
   if (!navigator.geolocation) return;
   navigator.geolocation.getCurrentPosition(
@@ -511,12 +522,39 @@ function requestFreshFix() {
       rawAccuracy = pos.coords.accuracy;
       lastFixTime = Date.now();
       updateGpsStatus();
+      updateAccBadge(rawAccuracy);
       refreshMarker();
     },
     () => {},
     { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 }
   );
 }
+
+// ── Accuracy badge ────────────────────────────────────────────────────────────
+function updateAccBadge(accuracyM) {
+  const el = document.getElementById('acc-badge');
+  if (!tracking || !isFinite(accuracyM)) { el.classList.remove('visible'); return; }
+  const m = Math.round(accuracyM);
+  el.textContent = `±${m} m`;
+  el.style.background = m <= 20 ? '#4CAF50' : m <= 60 ? '#FF9800' : '#f44336';
+  el.classList.add('visible');
+}
+
+// ── Periodic fresh-fix interval (keeps WiFi-assisted accuracy alive) ──────────
+let freshFixInterval = null;
+function startFreshFixInterval() {
+  clearInterval(freshFixInterval);
+  freshFixInterval = setInterval(requestFreshFix, 30_000);
+}
+function stopFreshFixInterval() {
+  clearInterval(freshFixInterval);
+  freshFixInterval = null;
+}
+
+// Re-request when switching back to the tab (best moment for a fresh WiFi fix)
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && tracking) requestFreshFix();
+});
 
 function openCalUI() {
   if (T && rawGps) {
@@ -540,6 +578,7 @@ map.on('locationfound', (e) => {
   rawAccuracy = e.accuracy;
   lastFixTime = Date.now();
   updateGpsStatus();
+  updateAccBadge(e.accuracy);
 
   if (!T) return;
 
@@ -555,6 +594,8 @@ map.on('locationerror', (e) => {
   toast('Location error: ' + e.message);
   document.getElementById('gps-btn').classList.remove('active');
   tracking = followMode = false;
+  stopFreshFixInterval();
+  updateAccBadge(Infinity);
 });
 
 map.on('dragstart', () => { followMode = false; });
@@ -565,6 +606,7 @@ document.getElementById('gps-btn').addEventListener('click', () => {
     tracking = followMode = true;
     document.getElementById('gps-btn').classList.add('active');
     toast('GPS started — calibrate to show your position', 4000);
+    startFreshFixInterval();
   } else if (markerOnMap) {
     followMode = true;
     map.setView(userMarker.getLatLng(), Math.max(map.getZoom(), 0));
