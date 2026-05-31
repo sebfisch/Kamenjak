@@ -301,46 +301,85 @@ setTimeout(hideLoader, 12000);
   }
 })();
 
-// ── Calibration: N-point least-squares (GPS → image pixels) ──────────────────
+// ── Calibration: N-point affine least-squares (GPS → image pixels) ───────────
 // Points: { raw:{lat,lng}, px, py, accuracy, timestamp }
 //   px, py = image pixel coords; py=0 is top-left, increases downward.
-// Transform T: { sLat, oLat, sLng, oLng }
-//   py = sLat * lat + oLat
-//   px = sLng * lng + oLng
-// Requires ≥ 2 points; returns null otherwise.
+// Transform T: full affine — handles any map orientation, not just North-up.
+//   px = ax*lat + bx*lng + cx
+//   py = ay*lat + by*lng + cy
+// Requires ≥ 3 non-collinear points; returns null otherwise.
 
 let calPoints = [];
 try { const s = localStorage.getItem('kmap-pts2'); if (s) calPoints = JSON.parse(s); } catch (_) {}
 
-function fitFromPoints(pts) {
-  if (pts.length < 2) return null;
+// Solve [lat, lng, 1] · β = out via Gaussian elimination (3 unknowns, n≥3 rows).
+function linreg3(pts, out) {
   const n = pts.length;
-  function linreg(xs, ys) {
-    let sx=0, sy=0, sxx=0, sxy=0;
-    for (let i=0;i<n;i++){sx+=xs[i];sy+=ys[i];sxx+=xs[i]*xs[i];sxy+=xs[i]*ys[i];}
-    const d = n*sxx - sx*sx;
-    const s = Math.abs(d) > 1e-14 ? (n*sxy - sx*sy)/d : 0;
-    return { s, o: (sy - s*sx)/n };
+  let slat=0, slng=0, sout=0, slat2=0, slatlng=0, slng2=0, slatout=0, slngout=0;
+  for (let i=0; i<n; i++) {
+    const lat=pts[i].raw.lat, lng=pts[i].raw.lng, o=out[i];
+    slat+=lat; slng+=lng; sout+=o;
+    slat2+=lat*lat; slatlng+=lat*lng; slng2+=lng*lng;
+    slatout+=lat*o; slngout+=lng*o;
   }
-  const ly = linreg(pts.map(p=>p.raw.lat), pts.map(p=>p.py));
-  const lx = linreg(pts.map(p=>p.raw.lng), pts.map(p=>p.px));
-  return { sLat: ly.s, oLat: ly.o, sLng: lx.s, oLng: lx.o };
+  // Normal equations: (X^T X) β = X^T y
+  const A = [
+    [slat2,   slatlng, slat, slatout],
+    [slatlng, slng2,   slng, slngout],
+    [slat,    slng,    n,    sout   ]
+  ];
+  for (let col=0; col<3; col++) {
+    let maxRow = col;
+    for (let row=col+1; row<3; row++) if (Math.abs(A[row][col]) > Math.abs(A[maxRow][col])) maxRow = row;
+    [A[col], A[maxRow]] = [A[maxRow], A[col]];
+    if (Math.abs(A[col][col]) < 1e-14) return null; // singular (collinear points)
+    for (let row=col+1; row<3; row++) {
+      const f = A[row][col] / A[col][col];
+      for (let j=col; j<4; j++) A[row][j] -= f * A[col][j];
+    }
+  }
+  const x = [0, 0, 0];
+  for (let i=2; i>=0; i--) {
+    x[i] = A[i][3];
+    for (let j=i+1; j<3; j++) x[i] -= A[i][j] * x[j];
+    x[i] /= A[i][i];
+  }
+  return x; // [a, b, c]  where out ≈ a*lat + b*lng + c
+}
+
+function fitFromPoints(pts) {
+  if (pts.length < 3) return null;
+  const rx = linreg3(pts, pts.map(p => p.px));
+  const ry = linreg3(pts, pts.map(p => p.py));
+  if (!rx || !ry) return null;
+  return { ax: rx[0], bx: rx[1], cx: rx[2],
+           ay: ry[0], by: ry[1], cy: ry[2] };
 }
 
 // GPS coords → image pixel coords {px, py}
 function applyTransform(t, raw) {
   if (!t) return null;
-  return { px: t.sLng * raw.lng + t.oLng, py: t.sLat * raw.lat + t.oLat };
+  return { px: t.ax*raw.lat + t.bx*raw.lng + t.cx,
+           py: t.ay*raw.lat + t.by*raw.lng + t.cy };
+}
+
+// Approximate pixels-per-metre from the affine scale columns
+function pxPerMetre(t, lat) {
+  if (!t) return 0;
+  const pixPerDegLat = Math.sqrt(t.ax*t.ax + t.ay*t.ay);
+  const pixPerDegLng = Math.sqrt(t.bx*t.bx + t.by*t.by);
+  const mLat = pixPerDegLat / 111320;
+  const mLng = pixPerDegLng / (111320 * Math.cos(lat * Math.PI/180));
+  return (mLat + mLng) / 2;
 }
 
 // Pixel residual for point p under transform t, converted to metres
 function pixelResidualM(p, t) {
   const pred = applyTransform(t, p.raw);
-  if (!pred || !t.sLat || !t.sLng) return Infinity;
-  const dPy = pred.py - p.py, dPx = pred.px - p.px;
-  const mPerPxY = 111320 / Math.abs(t.sLat);
-  const mPerPxX = 111320 * Math.cos(p.raw.lat * Math.PI/180) / Math.abs(t.sLng);
-  return Math.sqrt((dPy * mPerPxY)**2 + (dPx * mPerPxX)**2);
+  if (!pred) return Infinity;
+  const dPx = pred.px - p.px, dPy = pred.py - p.py;
+  const scale = pxPerMetre(t, p.raw.lat);
+  return scale > 0 ? Math.sqrt(dPx*dPx + dPy*dPy) / scale : Infinity;
 }
 
 function rmseMetres(pts, t) {
@@ -392,7 +431,7 @@ function updateBadge() {
   const el = document.getElementById('cal-count');
   const n  = calPoints.length;
   el.textContent = n || '';
-  el.className   = n >= 2 ? 'many' : n === 1 ? 'one' : '';
+  el.className   = n >= 3 ? 'many' : n >= 1 ? 'one' : '';
 }
 updateBadge();
 
@@ -414,7 +453,7 @@ function toast(msg, duration = 4000) {
   if (duration > 0) toastTimer = setTimeout(() => el.classList.remove('show'), duration);
 }
 
-// Show marker only when ≥2 calibration points exist AND pixel position is within image.
+// Show marker only when ≥3 calibration points exist AND pixel position is within image.
 function isWithinBounds(pixelPos) {
   if (!imgBounds) return false;
   return pixelPos.px >= 0 && pixelPos.px <= imgW && pixelPos.py >= 0 && pixelPos.py <= imgH;
@@ -422,9 +461,8 @@ function isWithinBounds(pixelPos) {
 
 function updateLocation(pixelPos, accuracyM) {
   const latlng = L.latLng(imgH - pixelPos.py, pixelPos.px);
-  const pxPerMetreY = T && T.sLat ? Math.abs(T.sLat) / 111320 : 0;
-  const accPx = accuracyM * pxPerMetreY;
-  const show = calPoints.length >= 2 && isWithinBounds(pixelPos);
+  const accPx = accuracyM * (rawGps ? pxPerMetre(T, rawGps.lat) : 0);
+  const show = calPoints.length >= 3 && isWithinBounds(pixelPos);
   if (!userMarker) {
     accCircle  = L.circle(latlng, { radius: accPx, color: '#2196F3', weight: 1,
                                      fillColor: '#2196F3', fillOpacity: 0.10, interactive: false });
@@ -531,7 +569,7 @@ document.getElementById('gps-btn').addEventListener('click', () => {
     followMode = true;
     map.setView(userMarker.getLatLng(), Math.max(map.getZoom(), 0));
   } else {
-    toast(calPoints.length < 2
+    toast(calPoints.length < 3
       ? 'Calibrate first to show your position on the map.'
       : 'Your position is currently outside the map.', 4000);
   }
@@ -564,8 +602,9 @@ document.getElementById('cal-set').addEventListener('click', () => {
 
   savePoints(); fitTransform(); updateBadge(); closeCalUI(); refreshMarker();
   const n = calPoints.length, acc = Math.round(rawAccuracy);
-  toast(n < 2
-    ? `First point saved (±${acc} m). Add one more from a different spot to enable tracking.`
+  const need = 3 - n;
+  toast(n < 3
+    ? `Point ${n} saved (±${acc} m). ${need} more point${need > 1 ? 's' : ''} needed to enable tracking.`
     : `${n} calibration points · ±${acc} m`);
 });
 
