@@ -60,6 +60,12 @@
     }
     #cal-btn svg { width: 22px; height: 22px; fill: #444; }
 
+    #load-btn {
+      bottom: 148px; width: 44px; height: 44px;
+      background: white; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+    #load-btn svg { width: 22px; height: 22px; fill: #444; }
+
     /* point-count badge */
     #cal-count {
       position: absolute; top: -3px; right: -3px;
@@ -164,6 +170,12 @@
     0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></svg>
 </button>
 
+<button id="load-btn" class="fab" title="Load map file">
+  <svg viewBox="0 0 24 24"><path d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1
+    0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-2 8h-3v3h-2v-3h-3l4-4 4 4z"/></svg>
+</button>
+<input id="map-file" type="file" accept="image/*,.pdf" style="display:none">
+
 <button id="cal-btn" class="fab" title="Calibrate location">
   <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10
     10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93
@@ -224,24 +236,70 @@ map.zoomControl.setPosition('bottomleft');
 
 function hideLoader() { document.getElementById('loader').classList.add('gone'); }
 
-const preload = new Image();
-preload.onload = () => {
-  imgW = preload.naturalWidth;
-  imgH = preload.naturalHeight;
-  imgBounds = [[0, 0], [imgH, imgW]];
-  L.imageOverlay('map.jpg', imgBounds).addTo(map);
-  map.fitBounds(imgBounds);
-  fitTransform();
-  refreshMarker();
-  hideLoader();
-};
-preload.onerror = () => {
-  const el = document.getElementById('loader');
-  el.querySelector('span').textContent = 'Could not load map image';
-  el.querySelector('.spinner').style.display = 'none';
-};
+// ── IndexedDB helpers (store map blob across sessions) ────────────────────────
+function openDB() {
+  return new Promise((res, rej) => {
+    const req = indexedDB.open('kamenjak-db', 1);
+    req.onupgradeneeded = e => e.target.result.createObjectStore('maps');
+    req.onsuccess = e => res(e.target.result);
+    req.onerror   = e => rej(e.target.error);
+  });
+}
+async function saveMapIDB(blob) {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction('maps', 'readwrite');
+    tx.objectStore('maps').put(blob, 'current');
+    tx.oncomplete = res;
+    tx.onerror = e => rej(e.target.error);
+  });
+}
+async function loadMapIDB() {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx  = db.transaction('maps', 'readonly');
+    const req = tx.objectStore('maps').get('current');
+    req.onsuccess = () => res(req.result || null);
+    req.onerror   = e => rej(e.target.error);
+  });
+}
+
+// ── Map image loading ─────────────────────────────────────────────────────────
+let currentOverlay = null;
+let currentBlobUrl = null;
+
+function loadMapSource(src) {
+  const img = new Image();
+  img.onload = () => {
+    imgW = img.naturalWidth;
+    imgH = img.naturalHeight;
+    imgBounds = [[0, 0], [imgH, imgW]];
+    if (currentOverlay) map.removeLayer(currentOverlay);
+    currentOverlay = L.imageOverlay(src, imgBounds).addTo(map);
+    map.fitBounds(imgBounds);
+    fitTransform();
+    refreshMarker();
+    hideLoader();
+  };
+  img.onerror = () => {
+    const el = document.getElementById('loader');
+    el.querySelector('span').textContent = 'Could not load map image';
+    el.querySelector('.spinner').style.display = 'none';
+  };
+  img.src = src;
+}
+
+// Try IDB first; fall back to the bundled map.jpg
 setTimeout(hideLoader, 12000);
-preload.src = 'map.jpg';
+(async () => {
+  const blob = await loadMapIDB().catch(() => null);
+  if (blob) {
+    currentBlobUrl = URL.createObjectURL(blob);
+    loadMapSource(currentBlobUrl);
+  } else {
+    loadMapSource('map.jpg');
+  }
+})();
 
 // ── Calibration: N-point least-squares (GPS → image pixels) ──────────────────
 // Points: { raw:{lat,lng}, px, py, accuracy, timestamp }
@@ -517,6 +575,69 @@ document.getElementById('cal-reset').addEventListener('click', () => {
   calPoints = [];
   savePoints(); fitTransform(); updateBadge(); closeCalUI(); refreshMarker();
   toast('All calibration points cleared.');
+});
+
+// ── Load Map button ───────────────────────────────────────────────────────────
+document.getElementById('load-btn').addEventListener('click', () => {
+  document.getElementById('map-file').click();
+});
+
+// PDF.js 3.x UMD — injected lazily only when a PDF is picked
+async function loadPdfJs() {
+  if (window.pdfjsLib) return window.pdfjsLib;
+  await new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'pdf.min.js';
+    s.onload = res; s.onerror = rej;
+    document.head.appendChild(s);
+  });
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';
+  return window.pdfjsLib;
+}
+
+async function pdfToBlob(file) {
+  const pdfjs = await loadPdfJs();
+  const url = URL.createObjectURL(file);
+  try {
+    const doc  = await pdfjs.getDocument(url).promise;
+    const page = await doc.getPage(1);
+    const scale = 3;
+    const vp = page.getViewport({ scale });
+    const canvas = document.createElement('canvas');
+    canvas.width = vp.width; canvas.height = vp.height;
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+    return await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.92));
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+document.getElementById('map-file').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = '';  // reset so the same file can be re-picked
+  toast('Loading map…', 0);
+
+  try {
+    let blob;
+    if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+      blob = await pdfToBlob(file);
+    } else {
+      blob = file;
+    }
+
+    // New map → old calibration is invalid
+    calPoints = [];
+    savePoints(); fitTransform(); updateBadge(); refreshMarker();
+
+    if (currentBlobUrl) { URL.revokeObjectURL(currentBlobUrl); currentBlobUrl = null; }
+    await saveMapIDB(blob).catch(() => {});
+    currentBlobUrl = URL.createObjectURL(blob);
+    loadMapSource(currentBlobUrl);
+    toast('Map loaded — calibrate to show your location', 5000);
+  } catch (err) {
+    toast('Could not load file: ' + err.message, 5000);
+  }
 });
 </script>
 </body>
