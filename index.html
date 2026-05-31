@@ -191,25 +191,14 @@
 
 <script src="leaflet.js"></script>
 <script>
-// Longitude range is derived from the image pixel ratio (1536×2040 = 0.7529)
-// so that imageOverlay's rendered W:H in Web Mercator matches the photo exactly:
-//   dLng = imgRatio * dLat / cos(midLat)  →  0.7529 * 0.135 / cos(44.776°) = 0.1432
-// Latitude extent and centre are estimates; calibration handles GPS accuracy.
-const BOUNDS = [[44.708, 13.8184], [44.843, 13.9616]];
-
-// ── Calibration point quality ─────────────────────────────────────────────────
-// Keep at most MAX_POINTS. Each point is scored by:
-//   quality = exp(−age / RECENCY_TAU) / accuracy_metres
-// i.e. recent + precise = high score.  When the pool exceeds MAX_POINTS the
-// lowest-scoring point is dropped, so the set self-prunes toward the best data.
+// ── Calibration quality constants ─────────────────────────────────────────────
 const MAX_POINTS   = 5;
 const RECENCY_TAU  = 2 * 60 * 60 * 1000;  // 2-hour half-life
 const CLUSTER_DIST = 25;                   // metres — same-spot threshold
 const CLUSTER_TIME = 10 * 60 * 1000;       // 10 minutes
 
 function pointQuality(pt) {
-  const age = Date.now() - pt.timestamp;
-  return Math.exp(-age / RECENCY_TAU) / pt.accuracy;
+  return Math.exp(-(Date.now() - pt.timestamp) / RECENCY_TAU) / pt.accuracy;
 }
 
 function distMetres(a, b) {
@@ -219,17 +208,33 @@ function distMetres(a, b) {
   return Math.sqrt(dLat * dLat + Math.pow(dLng * Math.cos(midLat), 2)) * 6371000;
 }
 
+// ── Map (CRS.Simple — pixel-space coordinates) ────────────────────────────────
+// Image overlay at [[0,0],[imgH,imgW]]:
+//   Leaflet latLng(0,0) = bottom-left of image pixel space
+//   Leaflet latLng(imgH,imgW) = top-right of image pixel space
+//   image pixel (px,py) where py=0 is top  ↔  L.latLng(imgH-py, px)
+let imgW = 0, imgH = 0, imgBounds = null;
+
 const map = L.map('map', {
-  minZoom: 12, maxZoom: 19,
+  crs: L.CRS.Simple,
+  minZoom: -5, maxZoom: 5, zoomSnap: 0,
   attributionControl: false, zoomControl: true
 });
 map.zoomControl.setPosition('bottomleft');
-map.fitBounds(BOUNDS);
 
-// ── Map image ────────────────────────────────────────────────────────────────
 function hideLoader() { document.getElementById('loader').classList.add('gone'); }
+
 const preload = new Image();
-preload.onload  = hideLoader;
+preload.onload = () => {
+  imgW = preload.naturalWidth;
+  imgH = preload.naturalHeight;
+  imgBounds = [[0, 0], [imgH, imgW]];
+  L.imageOverlay('map.jpg', imgBounds).addTo(map);
+  map.fitBounds(imgBounds);
+  fitTransform();
+  refreshMarker();
+  hideLoader();
+};
 preload.onerror = () => {
   const el = document.getElementById('loader');
   el.querySelector('span').textContent = 'Could not load map image';
@@ -237,87 +242,82 @@ preload.onerror = () => {
 };
 setTimeout(hideLoader, 12000);
 preload.src = 'map.jpg';
-L.imageOverlay('map.jpg', BOUNDS).addTo(map);
 
-// ── Calibration: N-point least-squares ───────────────────────────────────────
-// Points: { raw:{lat,lng}, map:{lat,lng}, accuracy, timestamp }
-// 1 point  → translation only.
-// 2+ points → independent 1-D least-squares for lat and lng.
+// ── Calibration: N-point least-squares (GPS → image pixels) ──────────────────
+// Points: { raw:{lat,lng}, px, py, accuracy, timestamp }
+//   px, py = image pixel coords; py=0 is top-left, increases downward.
+// Transform T: { sLat, oLat, sLng, oLng }
+//   py = sLat * lat + oLat
+//   px = sLng * lng + oLng
+// Requires ≥ 2 points; returns null otherwise.
 
 let calPoints = [];
-try { const s = localStorage.getItem('kmap-pts'); if (s) calPoints = JSON.parse(s); } catch (_) {}
+try { const s = localStorage.getItem('kmap-pts2'); if (s) calPoints = JSON.parse(s); } catch (_) {}
 
-// ── Transform helpers (pure — work on any point array) ───────────────────────
 function fitFromPoints(pts) {
+  if (pts.length < 2) return null;
   const n = pts.length;
-  if (n === 0) return null;
-  if (n === 1) return { simple: true,
-    dLat: pts[0].map.lat - pts[0].raw.lat,
-    dLng: pts[0].map.lng - pts[0].raw.lng };
   function linreg(xs, ys) {
     let sx=0, sy=0, sxx=0, sxy=0;
     for (let i=0;i<n;i++){sx+=xs[i];sy+=ys[i];sxx+=xs[i]*xs[i];sxy+=xs[i]*ys[i];}
     const d = n*sxx - sx*sx;
-    const s = Math.abs(d) > 1e-14 ? (n*sxy - sx*sy)/d : 1;
+    const s = Math.abs(d) > 1e-14 ? (n*sxy - sx*sy)/d : 0;
     return { s, o: (sy - s*sx)/n };
   }
-  const la = linreg(pts.map(p=>p.raw.lat), pts.map(p=>p.map.lat));
-  const lo = linreg(pts.map(p=>p.raw.lng), pts.map(p=>p.map.lng));
-  return { simple: false, sLat: la.s, oLat: la.o, sLng: lo.s, oLng: lo.o };
+  const ly = linreg(pts.map(p=>p.raw.lat), pts.map(p=>p.py));
+  const lx = linreg(pts.map(p=>p.raw.lng), pts.map(p=>p.px));
+  return { sLat: ly.s, oLat: ly.o, sLng: lx.s, oLng: lx.o };
 }
 
+// GPS coords → image pixel coords {px, py}
 function applyTransform(t, raw) {
-  if (!t)        return { lat: raw.lat, lng: raw.lng };
-  if (t.simple)  return { lat: raw.lat + t.dLat, lng: raw.lng + t.dLng };
-  return { lat: t.sLat * raw.lat + t.oLat, lng: t.sLng * raw.lng + t.oLng };
+  if (!t) return null;
+  return { px: t.sLng * raw.lng + t.oLng, py: t.sLat * raw.lat + t.oLat };
+}
+
+// Pixel residual for point p under transform t, converted to metres
+function pixelResidualM(p, t) {
+  const pred = applyTransform(t, p.raw);
+  if (!pred || !t.sLat || !t.sLng) return Infinity;
+  const dPy = pred.py - p.py, dPx = pred.px - p.px;
+  const mPerPxY = 111320 / Math.abs(t.sLat);
+  const mPerPxX = 111320 * Math.cos(p.raw.lat * Math.PI/180) / Math.abs(t.sLng);
+  return Math.sqrt((dPy * mPerPxY)**2 + (dPx * mPerPxX)**2);
 }
 
 function rmseMetres(pts, t) {
-  let sum = 0;
-  for (const p of pts) {
-    const pr = applyTransform(t, p.raw);
-    const dLat = (pr.lat - p.map.lat) * 111320;
-    const dLng = (pr.lng - p.map.lng) * 111320 * Math.cos(p.raw.lat * Math.PI / 180);
-    sum += dLat*dLat + dLng*dLng;
-  }
-  return Math.sqrt(sum / pts.length);
+  return Math.sqrt(pts.reduce((s,p) => s + pixelResidualM(p,t)**2, 0) / pts.length);
 }
 
-// ── Cached transform (rebuilt from calPoints) ─────────────────────────────────
 let T = null;
 function fitTransform() { T = fitFromPoints(calPoints); }
 
+// GPS → Leaflet CRS.Simple latlng (null if no transform or image not loaded)
 function toDisplay(raw) {
-  const d = applyTransform(T, raw);
-  return L.latLng(d.lat, d.lng);
+  const px = applyTransform(T, raw);
+  if (!px || !imgH) return null;
+  return L.latLng(imgH - px.py, px.px);
 }
 
-// ── Add a new calibration point ───────────────────────────────────────────────
-// Returns null on success, or { residualM } if the point is an outlier.
 function tryAddPoint(newPt) {
-  // Separate existing points into same-cluster and outside
   const inCluster = [], outside = [];
   for (const p of calPoints) {
     (distMetres(p.raw, newPt.raw) < CLUSTER_DIST &&
      Math.abs(p.timestamp - newPt.timestamp) < CLUSTER_TIME
       ? inCluster : outside).push(p);
   }
-
-  // Best representative for this cluster position
   const best = [...inCluster, newPt].reduce((a, b) =>
     pointQuality(a) >= pointQuality(b) ? a : b);
 
-  // Outlier check: when ≥3 outside points exist, build a model from them and
-  // reject if the candidate deviates more than max(3×RMSE, 30 m).
   if (outside.length >= 3) {
     const tRef = fitFromPoints(outside);
-    const predicted = applyTransform(tRef, best.raw);
-    const residualM = distMetres(predicted, best.map);
-    const threshold = Math.max(3 * rmseMetres(outside, tRef), 30);
-    if (residualM > threshold) return { residualM: Math.round(residualM) };
+    if (tRef) {
+      const residualM = pixelResidualM(best, tRef);
+      const threshold = Math.max(3 * rmseMetres(outside, tRef), 30);
+      if (residualM > threshold) return { residualM: Math.round(residualM) };
+    }
   }
 
-  // Accepted — update pool and prune
   calPoints = [...outside, best];
   if (calPoints.length > MAX_POINTS) {
     calPoints.sort((a, b) => pointQuality(a) - pointQuality(b));
@@ -327,7 +327,7 @@ function tryAddPoint(newPt) {
 }
 
 function savePoints() {
-  try { localStorage.setItem('kmap-pts', JSON.stringify(calPoints)); } catch (_) {}
+  try { localStorage.setItem('kmap-pts2', JSON.stringify(calPoints)); } catch (_) {}
 }
 
 function updateBadge() {
@@ -356,22 +356,24 @@ function toast(msg, duration = 4000) {
   if (duration > 0) toastTimer = setTimeout(() => el.classList.remove('show'), duration);
 }
 
-// Show marker only when calibrated AND position is inside the image bounds.
-// Without calibration, raw GPS has no meaningful relationship to the image.
-function isWithinBounds(latlng) {
-  return latlng.lat >= BOUNDS[0][0] && latlng.lat <= BOUNDS[1][0]
-      && latlng.lng >= BOUNDS[0][1] && latlng.lng <= BOUNDS[1][1];
+// Show marker only when ≥2 calibration points exist AND pixel position is within image.
+function isWithinBounds(pixelPos) {
+  if (!imgBounds) return false;
+  return pixelPos.px >= 0 && pixelPos.px <= imgW && pixelPos.py >= 0 && pixelPos.py <= imgH;
 }
 
-function updateLocation(pos, accuracy) {
-  const show = calPoints.length > 0 && isWithinBounds(pos);
+function updateLocation(pixelPos, accuracyM) {
+  const latlng = L.latLng(imgH - pixelPos.py, pixelPos.px);
+  const pxPerMetreY = T && T.sLat ? Math.abs(T.sLat) / 111320 : 0;
+  const accPx = accuracyM * pxPerMetreY;
+  const show = calPoints.length >= 2 && isWithinBounds(pixelPos);
   if (!userMarker) {
-    accCircle  = L.circle(pos, { radius: accuracy, color: '#2196F3', weight: 1,
-                                  fillColor: '#2196F3', fillOpacity: 0.10, interactive: false });
-    userMarker = L.marker(pos, { icon: locIcon, zIndexOffset: 1000 });
+    accCircle  = L.circle(latlng, { radius: accPx, color: '#2196F3', weight: 1,
+                                     fillColor: '#2196F3', fillOpacity: 0.10, interactive: false });
+    userMarker = L.marker(latlng, { icon: locIcon, zIndexOffset: 1000 });
   } else {
-    userMarker.setLatLng(pos);
-    accCircle.setLatLng(pos).setRadius(accuracy);
+    userMarker.setLatLng(latlng);
+    accCircle.setLatLng(latlng).setRadius(accPx);
   }
   if (show && !markerOnMap)  { accCircle.addTo(map); userMarker.addTo(map); markerOnMap = true;  }
   if (!show && markerOnMap)  { map.removeLayer(accCircle); map.removeLayer(userMarker); markerOnMap = false; }
@@ -379,7 +381,12 @@ function updateLocation(pos, accuracy) {
 }
 
 function refreshMarker() {
-  if (rawGps) updateLocation(toDisplay(rawGps), rawAccuracy);
+  if (!rawGps || !T) {
+    if (markerOnMap) { map.removeLayer(accCircle); map.removeLayer(userMarker); markerOnMap = false; }
+    return;
+  }
+  const pixels = applyTransform(T, rawGps);
+  if (pixels) updateLocation(pixels, rawAccuracy);
 }
 
 // ── Calibration banner GPS status ticker ─────────────────────────────────────
@@ -399,8 +406,7 @@ function updateGpsStatus() {
   el.className = stale ? 'stale' : 'fresh';
 }
 
-// Force the OS to take a new hardware reading (maximumAge:0 bypasses the cache,
-// same mechanism Google Maps uses to "wake up" GPS).
+// maximumAge:0 forces a fresh hardware GPS fix (same mechanism as Google Maps)
 function requestFreshFix() {
   if (!navigator.geolocation) return;
   navigator.geolocation.getCurrentPosition(
@@ -411,13 +417,16 @@ function requestFreshFix() {
       updateGpsStatus();
       refreshMarker();
     },
-    () => {},  // silent — watchPosition will still provide updates
+    () => {},
     { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 }
   );
 }
 
 function openCalUI() {
-  map.setView(toDisplay(rawGps), Math.max(map.getZoom(), 15));
+  if (T && rawGps) {
+    const display = toDisplay(rawGps);
+    if (display) map.setView(display, Math.max(map.getZoom(), 0));
+  }
   document.getElementById('cal-ui').classList.add('active');
   updateGpsStatus();
   bannerTimer = setInterval(updateGpsStatus, 1000);
@@ -436,12 +445,14 @@ map.on('locationfound', (e) => {
   lastFixTime = Date.now();
   updateGpsStatus();
 
-  const pos        = toDisplay(rawGps);
+  if (!T) return;
+
+  const pixels     = applyTransform(T, rawGps);
   const wasVisible = markerOnMap;
-  const nowVisible = updateLocation(pos, e.accuracy);
+  const nowVisible = updateLocation(pixels, e.accuracy);
 
   if (nowVisible && !wasVisible) toast(`Located · ±${Math.round(e.accuracy)} m`);
-  if (followMode && markerOnMap) map.setView(pos, Math.max(map.getZoom(), 15));
+  if (followMode && markerOnMap) map.setView(userMarker.getLatLng(), Math.max(map.getZoom(), 0));
 });
 
 map.on('locationerror', (e) => {
@@ -460,9 +471,9 @@ document.getElementById('gps-btn').addEventListener('click', () => {
     toast('GPS started — calibrate to show your position', 4000);
   } else if (markerOnMap) {
     followMode = true;
-    map.setView(userMarker.getLatLng(), Math.max(map.getZoom(), 15));
+    map.setView(userMarker.getLatLng(), Math.max(map.getZoom(), 0));
   } else {
-    toast(calPoints.length === 0
+    toast(calPoints.length < 2
       ? 'Calibrate first to show your position on the map.'
       : 'Your position is currently outside the map.', 4000);
   }
@@ -475,10 +486,14 @@ document.getElementById('cal-btn').addEventListener('click', () => {
 });
 
 document.getElementById('cal-set').addEventListener('click', () => {
-  const centre   = map.getCenter();
+  // map.getCenter() in CRS.Simple gives latLng(imgH-py, px) → invert to get pixel coords
+  const centre = map.getCenter();
+  const px = centre.lng;
+  const py = imgH - centre.lat;
+
   const rejected = tryAddPoint({
     raw:       { lat: rawGps.lat, lng: rawGps.lng },
-    map:       { lat: centre.lat, lng: centre.lng },
+    px, py,
     accuracy:  rawAccuracy,
     timestamp: Date.now()
   });
@@ -486,13 +501,13 @@ document.getElementById('cal-set').addEventListener('click', () => {
   if (rejected) {
     toast(`Outlier rejected (${rejected.residualM} m from model). ` +
           `Check your position, or tap ↺ to reset and start fresh.`, 6000);
-    return;  // leave panel open for retry
+    return;
   }
 
   savePoints(); fitTransform(); updateBadge(); closeCalUI(); refreshMarker();
   const n = calPoints.length, acc = Math.round(rawAccuracy);
-  toast(n === 1
-    ? `Point saved (±${acc} m). Add more from different spots for scale correction.`
+  toast(n < 2
+    ? `First point saved (±${acc} m). Add one more from a different spot to enable tracking.`
     : `${n} calibration points · ±${acc} m`);
 });
 
