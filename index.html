@@ -174,6 +174,28 @@
       background: rgba(255,80,80,0.25); color: #ff8080;
       font-size: 20px;
     }
+
+    /* ── Cal-point markers (shown on map while cal-ui is open) ── */
+    .cal-pt-cross { position: relative; width: 20px; height: 20px; }
+    .cal-pt-cross::before, .cal-pt-cross::after {
+      content: ''; position: absolute;
+      background: rgba(255,152,0,0.95); border-radius: 1px;
+    }
+    .cal-pt-cross::before { width: 100%; height: 2px; top: 50%; transform: translateY(-50%); }
+    .cal-pt-cross::after  { width: 2px; height: 100%; left: 50%; transform: translateX(-50%); }
+
+    /* ── Per-point deletion confirmation bar ── */
+    #cal-pt-confirm {
+      display: none; position: fixed; bottom: 0; left: 0; right: 0;
+      z-index: 1300; background: rgba(0,0,0,0.92);
+      pointer-events: auto;
+    }
+    #cal-pt-confirm.active { display: block; }
+    #cal-pt-info {
+      padding: 12px 20px 4px; color: #ccc; font-size: 13px; text-align: center;
+    }
+    #cal-pt-bar { display: flex; gap: 10px; padding: 8px 16px 16px; }
+    #cal-pt-delete { background: rgba(255,80,80,0.35); color: #ff8080; }
   </style>
 </head>
 <body>
@@ -234,27 +256,18 @@
   </div>
 </div>
 
+<div id="cal-pt-confirm">
+  <div id="cal-pt-info"></div>
+  <div id="cal-pt-bar">
+    <button class="cal-action" id="cal-pt-cancel">Cancel</button>
+    <button class="cal-action" id="cal-pt-delete">Delete point</button>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script src="leaflet.js"></script>
 <script>
-// ── Calibration quality constants ─────────────────────────────────────────────
-const MAX_POINTS   = 5;
-const RECENCY_TAU  = 2 * 60 * 60 * 1000;  // 2-hour half-life
-const CLUSTER_DIST = 25;                   // metres — same-spot threshold
-const CLUSTER_TIME = 10 * 60 * 1000;       // 10 minutes
-
-function pointQuality(pt) {
-  return Math.exp(-(Date.now() - pt.timestamp) / RECENCY_TAU) / pt.accuracy;
-}
-
-function distMetres(a, b) {
-  const dLat = (b.lat - a.lat) * Math.PI / 180;
-  const dLng = (b.lng - a.lng) * Math.PI / 180;
-  const midLat = (a.lat + b.lat) / 2 * Math.PI / 180;
-  return Math.sqrt(dLat * dLat + Math.pow(dLng * Math.cos(midLat), 2)) * 6371000;
-}
-
 // ── Map (CRS.Simple — pixel-space coordinates) ────────────────────────────────
 // Image overlay at [[0,0],[imgH,imgW]]:
 //   Leaflet latLng(0,0) = bottom-left of image pixel space
@@ -447,32 +460,6 @@ function toDisplay(raw) {
   return L.latLng(imgH - px.py, px.px);
 }
 
-function tryAddPoint(newPt) {
-  const inCluster = [], outside = [];
-  for (const p of calPoints) {
-    (distMetres(p.raw, newPt.raw) < CLUSTER_DIST &&
-     Math.abs(p.timestamp - newPt.timestamp) < CLUSTER_TIME
-      ? inCluster : outside).push(p);
-  }
-  const best = [...inCluster, newPt].reduce((a, b) =>
-    pointQuality(a) >= pointQuality(b) ? a : b);
-
-  if (outside.length >= 3) {
-    const tRef = fitFromPoints(outside);
-    if (tRef) {
-      const residualM = pixelResidualM(best, tRef);
-      const threshold = Math.max(3 * rmseMetres(outside, tRef), 30);
-      if (residualM > threshold) return { residualM: Math.round(residualM) };
-    }
-  }
-
-  calPoints = [...outside, best];
-  if (calPoints.length > MAX_POINTS) {
-    calPoints.sort((a, b) => pointQuality(a) - pointQuality(b));
-    calPoints.splice(0, calPoints.length - MAX_POINTS);
-  }
-  return null;
-}
 
 function savePoints() {
   try { localStorage.setItem('kmap-pts2', JSON.stringify(calPoints)); } catch (_) {}
@@ -629,12 +616,15 @@ function openCalUI() {
   updateGpsStatus();
   bannerTimer = setInterval(updateGpsStatus, 1000);
   requestFreshFix();
+  showCalMarkers();
 }
 
 function closeCalUI() {
   document.getElementById('cal-ui').classList.remove('active');
   clearInterval(bannerTimer);
   bannerTimer = null;
+  hideCalMarkers();
+  closePtConfirm();
 }
 
 map.on('locationfound', (e) => {
@@ -683,6 +673,61 @@ document.getElementById('gps-btn').addEventListener('click', () => {
   }
 });
 
+// ── Calibration point markers (visible while cal-ui is open) ─────────────────
+let calMarkers = [];
+
+function showCalMarkers() {
+  hideCalMarkers();
+  calPoints.forEach((p, i) => {
+    const latlng = L.latLng(imgH - p.py, p.px);
+    const icon = L.divIcon({
+      html: '<div class="cal-pt-cross"></div>',
+      iconSize: [20, 20], iconAnchor: [10, 10], className: ''
+    });
+    const marker = L.marker(latlng, { icon, interactive: true, zIndexOffset: 900 }).addTo(map);
+    marker.on('click', () => openPtConfirm(i));
+    calMarkers.push(marker);
+    if (T) {
+      const r = p.accuracy * pxPerMetre(T, p.raw.lat);
+      const circle = L.circle(latlng, {
+        radius: r, color: '#FF9800', weight: 1,
+        fillColor: '#FF9800', fillOpacity: 0.08, interactive: false
+      }).addTo(map);
+      calMarkers.push(circle);
+    }
+  });
+}
+
+function hideCalMarkers() {
+  calMarkers.forEach(l => map.removeLayer(l));
+  calMarkers = [];
+}
+
+let pendingDeleteIdx = -1;
+
+function openPtConfirm(i) {
+  pendingDeleteIdx = i;
+  const p = calPoints[i];
+  const res = T ? ` · Δ${Math.round(pixelResidualM(p, T))} m residual` : '';
+  document.getElementById('cal-pt-info').textContent =
+    `Point ${i + 1} · ±${Math.round(p.accuracy)} m GPS${res}`;
+  document.getElementById('cal-pt-confirm').classList.add('active');
+}
+
+function closePtConfirm() {
+  pendingDeleteIdx = -1;
+  document.getElementById('cal-pt-confirm').classList.remove('active');
+}
+
+document.getElementById('cal-pt-cancel').addEventListener('click', closePtConfirm);
+document.getElementById('cal-pt-delete').addEventListener('click', () => {
+  if (pendingDeleteIdx < 0) return;
+  calPoints.splice(pendingDeleteIdx, 1);
+  savePoints(); fitTransform(); updateBadge(); refreshMarker();
+  closePtConfirm();
+  showCalMarkers();
+});
+
 // ── Calibration UI ───────────────────────────────────────────────────────────
 document.getElementById('cal-btn').addEventListener('click', () => {
   if (!rawGps) { toast('Enable GPS first, then calibrate.'); return; }
@@ -690,30 +735,17 @@ document.getElementById('cal-btn').addEventListener('click', () => {
 });
 
 document.getElementById('cal-set').addEventListener('click', () => {
-  // map.getCenter() in CRS.Simple gives latLng(imgH-py, px) → invert to get pixel coords
   const centre = map.getCenter();
-  const px = centre.lng;
-  const py = imgH - centre.lat;
-
   const gps = smoothedGps() || rawGps;
-  const rejected = tryAddPoint({
-    raw:       { lat: gps.lat, lng: gps.lng },
-    px, py,
-    accuracy:  rawAccuracy,
-    timestamp: Date.now()
+  calPoints.push({
+    raw: { lat: gps.lat, lng: gps.lng },
+    px: centre.lng, py: imgH - centre.lat,
+    accuracy: rawAccuracy, timestamp: Date.now()
   });
-
-  if (rejected) {
-    toast(`Outlier rejected (${rejected.residualM} m from model). ` +
-          `Check your position, or tap ↺ to reset and start fresh.`, 6000);
-    return;
-  }
-
   savePoints(); fitTransform(); updateBadge(); closeCalUI(); refreshMarker();
-  const n = calPoints.length, acc = Math.round(rawAccuracy);
-  const need = 3 - n;
+  const n = calPoints.length, acc = Math.round(rawAccuracy), need = 3 - n;
   toast(n < 3
-    ? `Point ${n} saved (±${acc} m). ${need} more point${need > 1 ? 's' : ''} needed to enable tracking.`
+    ? `Point ${n} saved (±${acc} m). ${need} more point${need > 1 ? 's' : ''} needed.`
     : `${n} calibration points · ±${acc} m`);
 });
 
