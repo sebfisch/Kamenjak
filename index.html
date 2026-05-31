@@ -450,6 +450,28 @@ let rawGps = null, rawAccuracy = Infinity, lastFixTime = 0;
 let userMarker = null, accCircle = null, markerOnMap = false;
 let tracking = false, followMode = false, toastTimer = null;
 
+// Rolling weighted-average smoother: last SMOOTH_N positions, weighted by 1/accuracy.
+// Entries older than 60 s are pruned so a GPS gap doesn't mix stale readings with fresh ones.
+const SMOOTH_N = 5;
+let posHistory = [];  // [{ lat, lng, accuracy, t }]
+
+function addToHistory(lat, lng, accuracy) {
+  const now = Date.now();
+  posHistory = posHistory.filter(p => now - p.t < 60_000);
+  posHistory.push({ lat, lng, accuracy, t: now });
+  if (posHistory.length > SMOOTH_N) posHistory.shift();
+}
+
+function smoothedGps() {
+  if (!posHistory.length) return null;
+  let wLat = 0, wLng = 0, wSum = 0;
+  for (const p of posHistory) {
+    const w = 1 / p.accuracy;
+    wLat += p.lat * w; wLng += p.lng * w; wSum += w;
+  }
+  return L.latLng(wLat / wSum, wLng / wSum);
+}
+
 const locIcon = L.divIcon({
   html: '<div class="loc-wrap"><div class="loc-ring"></div><div class="loc-dot"></div></div>',
   iconSize: [20,20], iconAnchor: [10,10], className: ''
@@ -487,11 +509,12 @@ function updateLocation(pixelPos, accuracyM) {
 }
 
 function refreshMarker() {
-  if (!rawGps || !T) {
+  const gps = smoothedGps();
+  if (!gps || !T) {
     if (markerOnMap) { map.removeLayer(accCircle); map.removeLayer(userMarker); markerOnMap = false; }
     return;
   }
-  const pixels = applyTransform(T, rawGps);
+  const pixels = applyTransform(T, gps);
   if (pixels) updateLocation(pixels, rawAccuracy);
 }
 
@@ -521,6 +544,7 @@ function requestFreshFix() {
       rawGps      = L.latLng(pos.coords.latitude, pos.coords.longitude);
       rawAccuracy = pos.coords.accuracy;
       lastFixTime = Date.now();
+      addToHistory(rawGps.lat, rawGps.lng, rawAccuracy);
       updateGpsStatus();
       updateAccBadge(rawAccuracy);
       refreshMarker();
@@ -557,8 +581,9 @@ document.addEventListener('visibilitychange', () => {
 });
 
 function openCalUI() {
-  if (T && rawGps) {
-    const display = toDisplay(rawGps);
+  const gps = smoothedGps() || rawGps;
+  if (T && gps) {
+    const display = toDisplay(gps);
     if (display) map.setView(display, Math.max(map.getZoom(), 0));
   }
   document.getElementById('cal-ui').classList.add('active');
@@ -577,12 +602,14 @@ map.on('locationfound', (e) => {
   rawGps      = e.latlng;
   rawAccuracy = e.accuracy;
   lastFixTime = Date.now();
+  addToHistory(rawGps.lat, rawGps.lng, rawAccuracy);
   updateGpsStatus();
   updateAccBadge(e.accuracy);
 
   if (!T) return;
 
-  const pixels     = applyTransform(T, rawGps);
+  const gps        = smoothedGps();
+  const pixels     = applyTransform(T, gps);
   const wasVisible = markerOnMap;
   const nowVisible = updateLocation(pixels, e.accuracy);
 
@@ -629,8 +656,9 @@ document.getElementById('cal-set').addEventListener('click', () => {
   const px = centre.lng;
   const py = imgH - centre.lat;
 
+  const gps = smoothedGps() || rawGps;
   const rejected = tryAddPoint({
-    raw:       { lat: rawGps.lat, lng: rawGps.lng },
+    raw:       { lat: gps.lat, lng: gps.lng },
     px, py,
     accuracy:  rawAccuracy,
     timestamp: Date.now()
@@ -707,8 +735,8 @@ document.getElementById('map-file').addEventListener('change', async (e) => {
       blob = file;
     }
 
-    // New map → old calibration is invalid
-    calPoints = [];
+    // New map → old calibration and position history are invalid
+    calPoints = []; posHistory = [];
     savePoints(); fitTransform(); updateBadge(); refreshMarker();
 
     if (currentBlobUrl) { URL.revokeObjectURL(currentBlobUrl); currentBlobUrl = null; }
