@@ -62,6 +62,17 @@
     }
     #acc-badge.visible { opacity: 1; }
 
+    /* ── Compass ── */
+    #compass {
+      position: fixed; top: 12px; right: 12px; z-index: 1000;
+      width: 48px; height: 48px;
+      background: rgba(255,255,255,0.92); border-radius: 50%;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+      display: flex; align-items: center; justify-content: center;
+      pointer-events: none; opacity: 0; transition: opacity 0.3s;
+    }
+    #compass.visible { opacity: 1; }
+
     #cal-btn {
       bottom: 124px; width: 44px; height: 44px;
       background: white; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
@@ -169,6 +180,20 @@
 
 <div id="loader"><div class="spinner"></div><span>Loading map…</span></div>
 <div id="map"></div>
+
+<!-- Compass: red tip = North. Visible once ≥3 calibration points exist. -->
+<div id="compass">
+  <svg viewBox="-1 -1 2 2" width="40" height="40">
+    <circle r="0.94" fill="none" stroke="#e8e8e8" stroke-width="0.07"/>
+    <g id="compass-needle">
+      <!-- North half: red -->
+      <polygon points="0,-0.62 0.11,0.06 -0.11,0.06" fill="#e53935"/>
+      <!-- South half: gray -->
+      <polygon points="0,0.62 0.11,0.06 -0.11,0.06" fill="#bbb"/>
+      <circle r="0.08" fill="#555"/>
+    </g>
+  </svg>
+</div>
 
 <div id="acc-badge"></div>
 
@@ -397,7 +422,23 @@ function rmseMetres(pts, t) {
 }
 
 let T = null;
-function fitTransform() { T = fitFromPoints(calPoints); }
+function fitTransform() {
+  T = fitFromPoints(calPoints);
+  updateCompass();
+}
+
+// North direction in pixel space is the vector (T.ax, T.ay) — the pixel
+// displacement produced by a unit increase in latitude. Rotating the
+// up-pointing needle by atan2(ax, −ay) aligns its red tip with screen-North.
+function updateCompass() {
+  const el = document.getElementById('compass');
+  if (!T || Math.sqrt(T.ax*T.ax + T.ay*T.ay) < 1e-10) {
+    el.classList.remove('visible'); return;
+  }
+  const angle = Math.atan2(T.ax, -T.ay) * 180 / Math.PI;
+  document.getElementById('compass-needle').setAttribute('transform', `rotate(${angle})`);
+  el.classList.add('visible');
+}
 
 // GPS → Leaflet CRS.Simple latlng (null if no transform or image not loaded)
 function toDisplay(raw) {
