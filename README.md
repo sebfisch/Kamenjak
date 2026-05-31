@@ -1,6 +1,6 @@
 # Kamenjak — offline map with GPS
 
-A single-page web app that turns any photo or scanned map into a pannable,
+[A single-page web app](https://sebfisch.github.io/Kamenjak/) that turns any photo or scanned map into a pannable,
 zoomable map with live GPS tracking. Runs entirely in the browser — no server,
 no account, no internet connection required after the initial load.
 
