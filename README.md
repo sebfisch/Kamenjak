@@ -40,6 +40,10 @@ Calibration is cleared automatically since it belongs to the previous map.
 - The accuracy badge shows GPS quality; calibrate when it is green (≤ 20 m).
 - The app opens Google-Maps-style fresh GPS fixes every 30 seconds and whenever
   you switch back to the tab, to maintain WiFi-assisted accuracy.
+- To review or remove individual points, open calibration mode — existing points
+  appear on the map as orange crosses with accuracy circles. Tap a cross to see
+  its GPS accuracy and fit residual, then delete it if needed. The ↺ button
+  clears all points at once.
 
 ## Technical notes
 
