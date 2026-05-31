@@ -450,16 +450,14 @@ let rawGps = null, rawAccuracy = Infinity, lastFixTime = 0;
 let userMarker = null, accCircle = null, markerOnMap = false;
 let tracking = false, followMode = false, toastTimer = null;
 
-// Rolling weighted-average smoother: last SMOOTH_N positions, weighted by 1/accuracy.
-// Entries older than 60 s are pruned so a GPS gap doesn't mix stale readings with fresh ones.
-const SMOOTH_N = 5;
+// Rolling weighted-average smoother: all positions from the last 60 s,
+// weighted by 1/accuracy so high-quality fixes contribute more.
 let posHistory = [];  // [{ lat, lng, accuracy, t }]
 
 function addToHistory(lat, lng, accuracy) {
   const now = Date.now();
   posHistory = posHistory.filter(p => now - p.t < 60_000);
   posHistory.push({ lat, lng, accuracy, t: now });
-  if (posHistory.length > SMOOTH_N) posHistory.shift();
 }
 
 function smoothedGps() {
