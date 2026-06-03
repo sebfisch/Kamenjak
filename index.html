@@ -549,12 +549,21 @@ let T = null;
 
 // ── Instrumentation overlays ──────────────────────────────────────────────────
 
-let diagLayer = L.layerGroup().addTo(map);
-let showDiag  = false;
+let showDiag = false;
 map.on('zoomend moveend', () => { if (showDiag) drawDiag(); });
 
-// Shared canvas renderer: far fewer DOM nodes than SVG for many markers.
-const diagCanvas = L.canvas({ padding: 0.5 });
+// Raw canvas for the diagnostic grid.  Drawing directly with container-pixel
+// coords avoids Leaflet's canvas renderer culling (which skips polylines whose
+// bounding box falls outside the padded viewport canvas).
+const diagElem = (() => {
+  const cv = document.createElement('canvas');
+  cv.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:1000;';
+  map.getContainer().appendChild(cv);
+  const fit = () => { const s = map.getSize(); cv.width = s.x; cv.height = s.y; };
+  map.on('resize', fit);
+  fit();
+  return cv;
+})();
 
 // CCW convex hull of {x,y} points — Andrew's monotone chain.
 function convexHull2D(pts) {
@@ -612,7 +621,8 @@ function localScale(t, mx, my) {
 // green=median, red=magnified).  On a non-warped map the lines are straight and
 // evenly spaced; TPS warping bends them and changes their spacing.
 function drawDiag() {
-  diagLayer.clearLayers();
+  const ctx = diagElem.getContext('2d');
+  ctx.clearRect(0, 0, diagElem.width, diagElem.height);
   if (!T || !showDiag || !imgW || !imgH) return;
 
   const ptA = map.latLngToContainerPoint(L.latLng(0, 0));
@@ -685,11 +695,16 @@ function drawDiag() {
     return `rgb(${r},${g},${b})`;
   }
 
+  ctx.lineWidth = 1.5;
+  ctx.globalAlpha = 0.85;
   for (const seg of segs) {
-    L.polyline([L.latLng(imgH - seg.ay, seg.ax), L.latLng(imgH - seg.by, seg.bx)], {
-      color: segColor(seg.s), weight: 2, opacity: 0.85,
-      interactive: false, renderer: diagCanvas
-    }).addTo(diagLayer);
+    const pa = map.latLngToContainerPoint(L.latLng(imgH - seg.ay, seg.ax));
+    const pb = map.latLngToContainerPoint(L.latLng(imgH - seg.by, seg.bx));
+    ctx.strokeStyle = segColor(seg.s);
+    ctx.beginPath();
+    ctx.moveTo(pa.x, pa.y);
+    ctx.lineTo(pb.x, pb.y);
+    ctx.stroke();
   }
 }
 
