@@ -667,15 +667,18 @@ function fitTransform() {
   document.body.classList.toggle('lambda-on', hasT);
 }
 
-// North direction in pixel space is the my-column of J: (T.bx, T.by) —
-// the pixel displacement per metre of northward travel. Rotating the
-// up-pointing needle by atan2(bx, −by) aligns its red tip with screen-North.
+// North direction at the control-point centroid (metre-space origin), sampled
+// via finite differences so TPS warp contributions are included — not just the
+// global affine part (T.bx, T.by), which is wrong at low λ.
 function updateCompass() {
   const el = document.getElementById('compass');
-  if (!T || Math.sqrt(T.bx*T.bx + T.by*T.by) < 1e-10) {
-    el.classList.remove('visible'); return;
-  }
-  const angle = Math.atan2(T.bx, -T.by) * 180 / Math.PI;
+  if (!T) { el.classList.remove('visible'); return; }
+  const h = 1; // 1 m — same step as localScale
+  const p0 = applyTransformM(T, 0, -h);
+  const p1 = applyTransformM(T, 0,  h);
+  const dx = p1.px - p0.px, dy = p1.py - p0.py;
+  if (dx*dx + dy*dy < 1e-10) { el.classList.remove('visible'); return; }
+  const angle = Math.atan2(dx, -dy) * 180 / Math.PI;
   document.getElementById('compass-needle').setAttribute('transform', `rotate(${angle})`);
   el.classList.add('visible');
 }
