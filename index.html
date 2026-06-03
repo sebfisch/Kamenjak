@@ -606,6 +606,7 @@ function drawGrid() {
 let heatmapOverlay = null;
 let heatmapBlobUrl = null;
 let showHeatmap = false;
+let heatmapGen = 0; // incremented on every call; stale callbacks check against it
 
 function drawHeatmap() {
   if (heatmapOverlay) { map.removeLayer(heatmapOverlay); heatmapOverlay = null; }
@@ -647,7 +648,9 @@ function drawHeatmap() {
       ctx.fillRect(c * cellW, r * cellH, cellW, cellH);
     }
   }
+  const gen = ++heatmapGen;
   canvas.toBlob(blob => {
+    if (gen !== heatmapGen) return; // superseded by a newer drawHeatmap call
     heatmapBlobUrl = URL.createObjectURL(blob);
     heatmapOverlay = L.imageOverlay(heatmapBlobUrl, [[0, 0], [imgH, imgW]],
       { opacity: 1, interactive: false }).addTo(map);
