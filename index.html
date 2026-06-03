@@ -581,28 +581,46 @@ function drawDiag() {
   const y0 = Math.ceil(myMin / step) * step;
   const y1 = Math.floor(myMax / step) * step;
 
-  // Collect points and scales for normalisation
+  // Collect points, filtering to those whose TPS position falls inside the image.
+  // Also compute the affine-only position for the displacement arrow.
   const pts = [];
-  for (let mx = x0; mx <= x1 + step * 0.001; mx += step)
-    for (let my = y0; my <= y1 + step * 0.001; my += step)
-      pts.push({ mx, my, s: localScale(T, mx, my) });
+  for (let mx = x0; mx <= x1 + step * 0.001; mx += step) {
+    for (let my = y0; my <= y1 + step * 0.001; my += step) {
+      const tp = applyTransformM(T, mx, my);
+      if (tp.px < 0 || tp.px > imgW || tp.py < 0 || tp.py > imgH) continue;
+      // Affine-only position: same formula without the TPS radial sum
+      const ap = { px: T.cx + T.ax*mx + T.bx*my, py: T.cy + T.ay*mx + T.by*my };
+      pts.push({ tp, ap, s: localScale(T, mx, my) });
+    }
+  }
 
   const sorted = pts.map(p => p.s).filter(s => s > 0).sort((a, b) => a - b);
   const median = sorted[Math.floor(sorted.length / 2)] || 1;
 
   function dotColor(s) {
     const t = Math.max(0, Math.min(1, (Math.log2(s / median) + 2) / 4));
-    const r = Math.round(t < 0.5 ? 0              : (t - 0.5) * 2 * 255);
-    const g = Math.round(t < 0.5 ? t * 2 * 210    : (1 - (t - 0.5) * 2) * 210);
-    const b = Math.round(t < 0.5 ? (1 - t*2) * 255 : 0);
+    const r = Math.round(t < 0.5 ? 0               : (t - 0.5) * 2 * 255);
+    const g = Math.round(t < 0.5 ? t * 2 * 210     : (1 - (t - 0.5) * 2) * 210);
+    const b = Math.round(t < 0.5 ? (1 - t * 2) * 255 : 0);
     return `rgb(${r},${g},${b})`;
   }
 
   for (const pt of pts) {
-    const p  = applyTransformM(T, pt.mx, pt.my);
-    const ll = L.latLng(imgH - p.py, p.px);
-    const c  = dotColor(pt.s);
-    L.circleMarker(ll, {
+    const tpsLL = L.latLng(imgH - pt.tp.py, pt.tp.px);
+    const c = dotColor(pt.s);
+
+    // Displacement arrow: affine baseline → TPS position.
+    // Skip if displacement is sub-pixel (large λ / near-affine regime).
+    const dx = pt.tp.px - pt.ap.px, dy = pt.tp.py - pt.ap.py;
+    if (dx*dx + dy*dy > 0.25) {
+      const affLL = L.latLng(imgH - pt.ap.py, pt.ap.px);
+      L.polyline([affLL, tpsLL], {
+        color: 'white', weight: 1.5, opacity: 0.7, interactive: false
+      }).addTo(diagLayer);
+    }
+
+    // Dot at TPS position — colored by local scale, white border for legibility
+    L.circleMarker(tpsLL, {
       radius: 4, fillColor: c, fillOpacity: 1,
       color: 'white', weight: 1, interactive: false
     }).addTo(diagLayer);
