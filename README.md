@@ -17,8 +17,6 @@ no account, no internet connection required after the initial load.
   angles; GPS coordinates are first projected to local Cartesian metres to remove
   the cos(latitude) distortion before fitting
 - **Rotation-aware** — maps where North is not aligned with the top work correctly
-- **Position smoothing** — displayed location is a rolling weighted average of
-  all GPS readings from the last 60 seconds, weighted by reported accuracy
 - **Compass** — once calibrated, a needle in the top-right corner shows which
   direction on screen is North
 - **Accuracy badge** — live ±N m indicator above the GPS button, colour-coded
