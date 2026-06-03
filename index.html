@@ -553,6 +553,40 @@ let diagLayer = L.layerGroup().addTo(map);
 let showDiag  = false;
 map.on('zoomend moveend', () => { if (showDiag) drawDiag(); });
 
+// Shared canvas renderer: far fewer DOM nodes than SVG for many markers.
+const diagCanvas = L.canvas({ padding: 0.5 });
+
+// CCW convex hull of {x,y} points — Andrew's monotone chain.
+function convexHull2D(pts) {
+  if (pts.length < 3) return pts.slice();
+  const sorted = [...pts].sort((a, b) => a.x !== b.x ? a.x - b.x : a.y - b.y);
+  const cross = (o, a, b) => (a.x-o.x)*(b.y-o.y) - (a.y-o.y)*(b.x-o.x);
+  const lower = [];
+  for (const p of sorted) {
+    while (lower.length >= 2 && cross(lower[lower.length-2], lower[lower.length-1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper = [];
+  for (let i = sorted.length-1; i >= 0; i--) {
+    const p = sorted[i];
+    while (upper.length >= 2 && cross(upper[upper.length-2], upper[upper.length-1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  upper.pop(); lower.pop();
+  return lower.concat(upper);
+}
+
+// Point-in-CCW-convex-hull test.
+function inConvexHull(hull, x, y) {
+  const n = hull.length;
+  if (n < 3) return true;
+  for (let i = 0; i < n; i++) {
+    const a = hull[i], b = hull[(i+1) % n];
+    if ((b.x-a.x)*(y-a.y) - (b.y-a.y)*(x-a.x) < 0) return false;
+  }
+  return true;
+}
+
 // Inverse of the affine in metres-space: image pixel → {mx, my}
 function pixelToMeters(t, px, py) {
   const det = t.ax * t.by - t.bx * t.ay;
@@ -575,8 +609,9 @@ function localScale(t, mx, my) {
 
 // Diagnostic dot overlay: colored dots at grid intersections.
 // Color = local scale relative to median (blue=compressed, green=median, red=magnified).
-// White border keeps dots legible on any map background.
-// ~30 divisions across the longer axis; TPS warp shifts the dots off a regular grid.
+// Displacement arrows only inside convex hull of control points — TPS extrapolates
+// via U(r)=r²logr which grows unboundedly outside, making arrows meaningless there.
+// Canvas renderer and a dot cap keep redraw fast.
 function drawDiag() {
   diagLayer.clearLayers();
   if (!T || !showDiag || !imgW || !imgH) return;
@@ -592,35 +627,35 @@ function drawDiag() {
   const myMin = Math.min(...corners.map(c => c.my));
   const myMax = Math.max(...corners.map(c => c.my));
 
-  // Step in metres such that dots are ~40 screen pixels apart at current zoom.
+  // Step: ~40 screen pixels apart, but capped so total dots stay ≤ 1500.
   const ptA = map.latLngToContainerPoint(L.latLng(0, 0));
   const ptB = map.latLngToContainerPoint(L.latLng(0, 1));
   const screenPerImgPx = Math.hypot(ptB.x - ptA.x, ptB.y - ptA.y);
   const imgScale = pxPerMetre(T);
   if (screenPerImgPx <= 0 || imgScale <= 0) return;
-  const step = 40 / (screenPerImgPx * imgScale);
-  if (step <= 0) return;
+  const stepZoom = 40 / (screenPerImgPx * imgScale);
+  const stepCap  = Math.sqrt((mxMax - mxMin) * (myMax - myMin) / 1500);
+  const step = Math.max(stepZoom, stepCap, 1e-6);
 
   const x0 = Math.ceil(mxMin / step) * step;
   const x1 = Math.floor(mxMax / step) * step;
   const y0 = Math.ceil(myMin / step) * step;
   const y1 = Math.floor(myMax / step) * step;
 
-  // Collect points, filtering to those whose TPS position falls inside the image.
-  // Also compute the affine-only position for the displacement arrow.
+  const hull = convexHull2D(T.coords);
+
   const pts = [];
   for (let mx = x0; mx <= x1 + step * 0.001; mx += step) {
     for (let my = y0; my <= y1 + step * 0.001; my += step) {
       const tp = applyTransformM(T, mx, my);
       if (tp.px < 0 || tp.px > imgW || tp.py < 0 || tp.py > imgH) continue;
-      // OLS affine baseline: independent of λ, correct displacement reference
       const ap = { px: T.olsCx + T.olsAx*mx + T.olsBx*my, py: T.olsCy + T.olsAy*mx + T.olsBy*my };
-      pts.push({ tp, ap, s: localScale(T, mx, my) });
+      pts.push({ tp, ap, s: localScale(T, mx, my), inHull: inConvexHull(hull, mx, my) });
     }
   }
 
-  const sorted = pts.map(p => p.s).filter(s => s > 0).sort((a, b) => a - b);
-  const median = sorted[Math.floor(sorted.length / 2)] || 1;
+  const scales = pts.map(p => p.s).filter(s => s > 0).sort((a, b) => a - b);
+  const median = scales[Math.floor(scales.length / 2)] || 1;
 
   function dotColor(s) {
     const t = Math.max(0, Math.min(1, (Math.log2(s / median) + 2) / 4));
@@ -634,20 +669,20 @@ function drawDiag() {
     const tpsLL = L.latLng(imgH - pt.tp.py, pt.tp.px);
     const c = dotColor(pt.s);
 
-    // Displacement arrow: affine baseline → TPS position.
-    // Skip if displacement is sub-pixel (large λ / near-affine regime).
+    // Displacement arrow only inside convex hull of control points
     const dx = pt.tp.px - pt.ap.px, dy = pt.tp.py - pt.ap.py;
-    if (dx*dx + dy*dy > 0.25) {
+    if (pt.inHull && dx*dx + dy*dy > 0.25) {
       const affLL = L.latLng(imgH - pt.ap.py, pt.ap.px);
       L.polyline([affLL, tpsLL], {
-        color: 'white', weight: 1.5, opacity: 0.7, interactive: false
+        color: 'white', weight: 1.5, opacity: 0.7, interactive: false,
+        renderer: diagCanvas
       }).addTo(diagLayer);
     }
 
-    // Dot at TPS position — colored by local scale, white border for legibility
     L.circleMarker(tpsLL, {
       radius: 4, fillColor: c, fillOpacity: 1,
-      color: 'white', weight: 1, interactive: false
+      color: 'white', weight: 1, interactive: false,
+      renderer: diagCanvas
     }).addTo(diagLayer);
   }
 }
