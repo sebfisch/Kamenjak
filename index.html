@@ -607,42 +607,63 @@ function localScale(t, mx, my) {
   return Math.sqrt(Math.abs(jxx * jyy - jyx * jxy));
 }
 
-// Diagnostic dot overlay: dots at a fixed screen-space grid (40 px spacing).
-// Each dot samples the image coordinate currently under that screen position, so
-// the grid is always rectangular on screen regardless of map rotation.
-// Color = local scale at that point. Arrows (inside control-point hull only) show
-// the TPS-vs-OLS displacement vector rooted at the dot.
+// Diagnostic dot overlay: world-space grid, visible-area coverage.
+//
+// Scans a screen grid (STEP_SCR px spacing) to discover which world grid lines
+// fall in the current view.  For each screen sample, the metre coords are
+// SNAPPED to the nearest world grid point (spacing stepM ≈ STEP_SCR screen px),
+// then TPS-forward-transformed to get the dot's image position.  Deduplication
+// ensures each world grid point is drawn once.
+//
+// On a non-warped map the dots form a regular grid (coinciding with the lat/lng
+// grid).  On a warped map the dots shift from regularity — that positional shift
+// is the warping signal, complementing the colour (local scale).
+// Arrows show OLS → TPS deviation (drawn from the affine baseline to the TPS
+// position), suppressed outside the convex hull of control points.
 function drawDiag() {
   diagLayer.clearLayers();
   if (!T || !showDiag || !imgW || !imgH) return;
 
-  const STEP = 40; // screen pixels between dots
-  const hull  = convexHull2D(T.coords);
-  const sz    = map.getSize();
+  // Screen pixels per image pixel → metre step that produces ~STEP_SCR px spacing
+  const ptA = map.latLngToContainerPoint(L.latLng(0, 0));
+  const ptB = map.latLngToContainerPoint(L.latLng(0, 1));
+  const screenPerImgPx = Math.hypot(ptB.x - ptA.x, ptB.y - ptA.y);
+  const imgScale = pxPerMetre(T);
+  if (screenPerImgPx <= 0 || imgScale <= 0) return;
 
-  const pts = [];
-  for (let sx = STEP / 2; sx <= sz.x; sx += STEP) {
-    for (let sy = STEP / 2; sy <= sz.y; sy += STEP) {
-      // Screen position → image pixel
+  const STEP_SCR = 40; // screen pixels between scan samples (≈ dots)
+  const stepM = STEP_SCR / (screenPerImgPx * imgScale); // metres per grid step
+
+  const hull = convexHull2D(T.coords);
+  const sz   = map.getSize();
+
+  const seen = new Map(); // key → {tp, ap, mx, my}
+  for (let sx = 0; sx <= sz.x + STEP_SCR; sx += STEP_SCR) {
+    for (let sy = 0; sy <= sz.y + STEP_SCR; sy += STEP_SCR) {
       const ll = map.containerPointToLatLng(L.point(sx, sy));
       const px = ll.lng, py = imgH - ll.lat;
       if (px < 0 || px > imgW || py < 0 || py > imgH) continue;
-      // Image pixel → metre coords (via TPS affine inverse)
       const m = pixelToMeters(T, px, py);
       if (!m) continue;
-      const { mx, my } = m;
-      // TPS and OLS predictions at those metre coords
-      const tp = applyTransformM(T, mx, my);
-      const ap = { px: T.olsCx + T.olsAx*mx + T.olsBx*my,
-                   py: T.olsCy + T.olsAy*mx + T.olsBy*my };
-      pts.push({
-        px, py,
-        dpx: tp.px - ap.px, dpy: tp.py - ap.py,
-        s: localScale(T, mx, my),
-        inHull: inConvexHull(hull, mx, my)
-      });
+      // Snap to world grid using integer indices (avoids float key collisions)
+      const ix = Math.round(m.mx / stepM);
+      const iy = Math.round(m.my / stepM);
+      const key = `${ix},${iy}`;
+      if (seen.has(key)) continue;
+      const mxS = ix * stepM, myS = iy * stepM;
+      const tp  = applyTransformM(T, mxS, myS);
+      if (tp.px < 0 || tp.px > imgW || tp.py < 0 || tp.py > imgH) continue;
+      const ap = { px: T.olsCx + T.olsAx*mxS + T.olsBx*myS,
+                   py: T.olsCy + T.olsAy*mxS + T.olsBy*myS };
+      seen.set(key, { tp, ap, mx: mxS, my: myS });
     }
   }
+
+  const pts = [...seen.values()].map(v => ({
+    ...v,
+    s:      localScale(T, v.mx, v.my),
+    inHull: inConvexHull(hull, v.mx, v.my)
+  }));
 
   const scales = pts.map(p => p.s).filter(s => s > 0).sort((a, b) => a - b);
   const median = scales[Math.floor(scales.length / 2)] || 1;
@@ -656,18 +677,19 @@ function drawDiag() {
   }
 
   for (const pt of pts) {
-    const dotLL = L.latLng(imgH - pt.py, pt.px);
+    const tpsLL = L.latLng(imgH - pt.tp.py, pt.tp.px);
 
-    // Displacement arrow rooted at dot, only inside convex hull of control points
-    if (pt.inHull && pt.dpx*pt.dpx + pt.dpy*pt.dpy > 0.25) {
-      const tipLL = L.latLng(imgH - (pt.py + pt.dpy), pt.px + pt.dpx);
-      L.polyline([dotLL, tipLL], {
+    // Arrow: OLS position → TPS position (only inside calibration hull)
+    const dx = pt.tp.px - pt.ap.px, dy = pt.tp.py - pt.ap.py;
+    if (pt.inHull && dx*dx + dy*dy > 0.25) {
+      const affLL = L.latLng(imgH - pt.ap.py, pt.ap.px);
+      L.polyline([affLL, tpsLL], {
         color: 'white', weight: 1.5, opacity: 0.7, interactive: false,
         renderer: diagCanvas
       }).addTo(diagLayer);
     }
 
-    L.circleMarker(dotLL, {
+    L.circleMarker(tpsLL, {
       radius: 4, fillColor: dotColor(pt.s), fillOpacity: 1,
       color: 'white', weight: 1, interactive: false,
       renderer: diagCanvas
