@@ -607,68 +607,68 @@ function localScale(t, mx, my) {
   return Math.sqrt(Math.abs(jxx * jyy - jyx * jxy));
 }
 
-// Diagnostic dot overlay: world-space grid, visible-area coverage.
-//
-// Scans a screen grid (STEP_SCR px spacing) to discover which world grid lines
-// fall in the current view.  For each screen sample, the metre coords are
-// SNAPPED to the nearest world grid point (spacing stepM ≈ STEP_SCR screen px),
-// then TPS-forward-transformed to get the dot's image position.  Deduplication
-// ensures each world grid point is drawn once.
-//
-// On a non-warped map the dots form a regular grid (coinciding with the lat/lng
-// grid).  On a warped map the dots shift from regularity — that positional shift
-// is the warping signal, complementing the colour (local scale).
-// Arrows show OLS → TPS deviation (drawn from the affine baseline to the TPS
-// position), suppressed outside the convex hull of control points.
+// Diagnostic grid overlay: coloured polylines along metre-space (lat/lng) grid lines.
+// Each line is drawn as short segments coloured by local scale (blue=compressed,
+// green=median, red=magnified).  On a non-warped map the lines are straight and
+// evenly spaced; TPS warping bends them and changes their spacing.
 function drawDiag() {
   diagLayer.clearLayers();
   if (!T || !showDiag || !imgW || !imgH) return;
 
-  // Screen pixels per image pixel → metre step that produces ~STEP_SCR px spacing
   const ptA = map.latLngToContainerPoint(L.latLng(0, 0));
   const ptB = map.latLngToContainerPoint(L.latLng(0, 1));
   const screenPerImgPx = Math.hypot(ptB.x - ptA.x, ptB.y - ptA.y);
   const imgScale = pxPerMetre(T);
   if (screenPerImgPx <= 0 || imgScale <= 0) return;
 
-  const STEP_SCR = 40; // screen pixels between scan samples (≈ dots)
-  const stepM = STEP_SCR / (screenPerImgPx * imgScale); // metres per grid step
+  // Grid line spacing ~80 screen pixels; 8 sub-segments per cell for smooth curves
+  const STEP_SCR = 80;
+  const stepM    = STEP_SCR / (screenPerImgPx * imgScale);
+  const subStepM = stepM / 8;
 
-  const hull = convexHull2D(T.coords);
-  const sz   = map.getSize();
+  // Visible metre bounding box from current view corners
+  const sz  = map.getSize();
+  const mPts = [L.point(0,0), L.point(sz.x,0), L.point(0,sz.y), L.point(sz.x,sz.y)]
+    .map(pt => { const ll = map.containerPointToLatLng(pt);
+                 return pixelToMeters(T, ll.lng, imgH - ll.lat); })
+    .filter(Boolean);
+  if (!mPts.length) return;
+  const vmxMin = Math.min(...mPts.map(c => c.mx));
+  const vmxMax = Math.max(...mPts.map(c => c.mx));
+  const vmyMin = Math.min(...mPts.map(c => c.my));
+  const vmyMax = Math.max(...mPts.map(c => c.my));
 
-  const seen = new Map(); // key → {tp, ap, mx, my}
-  for (let sx = 0; sx <= sz.x + STEP_SCR; sx += STEP_SCR) {
-    for (let sy = 0; sy <= sz.y + STEP_SCR; sy += STEP_SCR) {
-      const ll = map.containerPointToLatLng(L.point(sx, sy));
-      const px = ll.lng, py = imgH - ll.lat;
-      if (px < 0 || px > imgW || py < 0 || py > imgH) continue;
-      const m = pixelToMeters(T, px, py);
-      if (!m) continue;
-      // Snap to world grid using integer indices (avoids float key collisions)
-      const ix = Math.round(m.mx / stepM);
-      const iy = Math.round(m.my / stepM);
-      const key = `${ix},${iy}`;
-      if (seen.has(key)) continue;
-      const mxS = ix * stepM, myS = iy * stepM;
-      const tp  = applyTransformM(T, mxS, myS);
-      if (tp.px < 0 || tp.px > imgW || tp.py < 0 || tp.py > imgH) continue;
-      const ap = { px: T.olsCx + T.olsAx*mxS + T.olsBx*myS,
-                   py: T.olsCy + T.olsAy*mxS + T.olsBy*myS };
-      seen.set(key, { tp, ap, mx: mxS, my: myS });
+  // Build segments for one grid line.
+  // isH=true → horizontal line at my=lineIndex*stepM, varying mx.
+  const segs = [];
+  function addLine(isH, lineIndex) {
+    const lineM = lineIndex * stepM;
+    const uMin  = (isH ? vmxMin : vmyMin) - subStepM;
+    const uMax  = (isH ? vmxMax : vmyMax) + subStepM;
+    let prev = null;
+    for (let u = uMin; u <= uMax + subStepM * 0.001; u += subStepM) {
+      const mx = isH ? u : lineM, my = isH ? lineM : u;
+      const tp = applyTransformM(T, mx, my);
+      const ok = tp.px >= 0 && tp.px <= imgW && tp.py >= 0 && tp.py <= imgH;
+      if (ok && prev) {
+        segs.push({ ax: prev.px, ay: prev.py, bx: tp.px, by: tp.py,
+                    s: localScale(T, (prev.mx + mx) / 2, (prev.my + my) / 2) });
+      }
+      prev = ok ? { px: tp.px, py: tp.py, mx, my } : null;
     }
   }
 
-  const pts = [...seen.values()].map(v => ({
-    ...v,
-    s:      localScale(T, v.mx, v.my),
-    inHull: inConvexHull(hull, v.mx, v.my)
-  }));
+  for (let iy = Math.floor(vmyMin / stepM); iy <= Math.ceil(vmyMax / stepM); iy++)
+    addLine(true, iy);
+  for (let ix = Math.floor(vmxMin / stepM); ix <= Math.ceil(vmxMax / stepM); ix++)
+    addLine(false, ix);
 
-  const scales = pts.map(p => p.s).filter(s => s > 0).sort((a, b) => a - b);
-  const median = scales[Math.floor(scales.length / 2)] || 1;
+  if (!segs.length) return;
 
-  function dotColor(s) {
+  const allS  = segs.map(s => s.s).filter(s => s > 0).sort((a, b) => a - b);
+  const median = allS[Math.floor(allS.length / 2)] || 1;
+
+  function segColor(s) {
     const t = Math.max(0, Math.min(1, (Math.log2(s / median) + 2) / 4));
     const r = Math.round(t < 0.5 ? 0               : (t - 0.5) * 2 * 255);
     const g = Math.round(t < 0.5 ? t * 2 * 210     : (1 - (t - 0.5) * 2) * 210);
@@ -676,23 +676,10 @@ function drawDiag() {
     return `rgb(${r},${g},${b})`;
   }
 
-  for (const pt of pts) {
-    const tpsLL = L.latLng(imgH - pt.tp.py, pt.tp.px);
-
-    // Arrow: OLS position → TPS position (only inside calibration hull)
-    const dx = pt.tp.px - pt.ap.px, dy = pt.tp.py - pt.ap.py;
-    if (pt.inHull && dx*dx + dy*dy > 0.25) {
-      const affLL = L.latLng(imgH - pt.ap.py, pt.ap.px);
-      L.polyline([affLL, tpsLL], {
-        color: 'white', weight: 1.5, opacity: 0.7, interactive: false,
-        renderer: diagCanvas
-      }).addTo(diagLayer);
-    }
-
-    L.circleMarker(tpsLL, {
-      radius: 4, fillColor: dotColor(pt.s), fillOpacity: 1,
-      color: 'white', weight: 1, interactive: false,
-      renderer: diagCanvas
+  for (const seg of segs) {
+    L.polyline([L.latLng(imgH - seg.ay, seg.ax), L.latLng(imgH - seg.by, seg.bx)], {
+      color: segColor(seg.s), weight: 2, opacity: 0.85,
+      interactive: false, renderer: diagCanvas
     }).addTo(diagLayer);
   }
 }
