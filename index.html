@@ -479,11 +479,29 @@ function fitTPS(pts, lam) {
   const solY = gaussSolve(A, bpy);
   if (!solX || !solY) return null;
 
+  // OLS affine baseline (independent of λ): px ≈ olsAx*mx + olsBx*my + olsCx
+  // Normal equations: [Σmx², Σmx·my, Σmx; Σmx·my, Σmy², Σmy; Σmx, Σmy, n]
+  let smx2 = 0, smxmy = 0, smy2 = 0, smx = 0, smy = 0;
+  let spxmx = 0, spxmy = 0, spx = 0, spymx = 0, spymy = 0, spy = 0;
+  for (let i = 0; i < n; i++) {
+    const { x: mx, y: my } = coords[i];
+    const { px, py } = pts[i];
+    smx2  += mx*mx;  smxmy += mx*my;  smy2 += my*my;
+    smx   += mx;     smy   += my;
+    spxmx += px*mx;  spxmy += px*my;  spx  += px;
+    spymx += py*mx;  spymy += py*my;  spy  += py;
+  }
+  const mkNols = () => [[smx2, smxmy, smx], [smxmy, smy2, smy], [smx, smy, n]];
+  const olsX = gaussSolve(mkNols(), [spxmx, spxmy, spx]);
+  const olsY = gaussSolve(mkNols(), [spymx, spymy, spy]);
+
   // solX = [w_0..w_{n-1}, cx, ax, bx]  (affine: px = cx + ax*mx + bx*my + Σwi·U)
   return {
     lat0, lon0, coords,
     wx: solX.slice(0, n), cx: solX[n], ax: solX[n+1], bx: solX[n+2],
-    wy: solY.slice(0, n), cy: solY[n], ay: solY[n+1], by: solY[n+2]
+    wy: solY.slice(0, n), cy: solY[n], ay: solY[n+1], by: solY[n+2],
+    olsAx: olsX ? olsX[0] : solX[n+1], olsBx: olsX ? olsX[1] : solX[n+2], olsCx: olsX ? olsX[2] : solX[n],
+    olsAy: olsY ? olsY[0] : solY[n+1], olsBy: olsY ? olsY[1] : solY[n+2], olsCy: olsY ? olsY[2] : solY[n]
   };
 }
 
@@ -533,6 +551,7 @@ let T = null;
 
 let diagLayer = L.layerGroup().addTo(map);
 let showDiag  = false;
+map.on('zoomend moveend', () => { if (showDiag) drawDiag(); });
 
 // Inverse of the affine in metres-space: image pixel → {mx, my}
 function pixelToMeters(t, px, py) {
@@ -573,7 +592,13 @@ function drawDiag() {
   const myMin = Math.min(...corners.map(c => c.my));
   const myMax = Math.max(...corners.map(c => c.my));
 
-  const step = Math.max(mxMax - mxMin, myMax - myMin) / 30;
+  // Step in metres such that dots are ~40 screen pixels apart at current zoom.
+  const ptA = map.latLngToContainerPoint(L.latLng(0, 0));
+  const ptB = map.latLngToContainerPoint(L.latLng(0, 1));
+  const screenPerImgPx = Math.hypot(ptB.x - ptA.x, ptB.y - ptA.y);
+  const imgScale = pxPerMetre(T);
+  if (screenPerImgPx <= 0 || imgScale <= 0) return;
+  const step = 40 / (screenPerImgPx * imgScale);
   if (step <= 0) return;
 
   const x0 = Math.ceil(mxMin / step) * step;
@@ -588,8 +613,8 @@ function drawDiag() {
     for (let my = y0; my <= y1 + step * 0.001; my += step) {
       const tp = applyTransformM(T, mx, my);
       if (tp.px < 0 || tp.px > imgW || tp.py < 0 || tp.py > imgH) continue;
-      // Affine-only position: same formula without the TPS radial sum
-      const ap = { px: T.cx + T.ax*mx + T.bx*my, py: T.cy + T.ay*mx + T.by*my };
+      // OLS affine baseline: independent of λ, correct displacement reference
+      const ap = { px: T.olsCx + T.olsAx*mx + T.olsBx*my, py: T.olsCy + T.olsAy*mx + T.olsBy*my };
       pts.push({ tp, ap, s: localScale(T, mx, my) });
     }
   }
