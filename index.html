@@ -611,36 +611,60 @@ function localScale(t, mx, my) {
 // Color = local scale relative to median (blue=compressed, green=median, red=magnified).
 // Displacement arrows only inside convex hull of control points — TPS extrapolates
 // via U(r)=r²logr which grows unboundedly outside, making arrows meaningless there.
-// Canvas renderer and a dot cap keep redraw fast.
+// Canvas renderer keeps redraw fast; dot count is capped to the visible area.
 function drawDiag() {
   diagLayer.clearLayers();
   if (!T || !showDiag || !imgW || !imgH) return;
 
-  const corners = [
+  // Full image extent in metres
+  const imgCorners = [
     pixelToMeters(T, 0, 0), pixelToMeters(T, imgW, 0),
     pixelToMeters(T, 0, imgH), pixelToMeters(T, imgW, imgH)
   ].filter(Boolean);
-  if (!corners.length) return;
+  if (!imgCorners.length) return;
+  const mxMin = Math.min(...imgCorners.map(c => c.mx));
+  const mxMax = Math.max(...imgCorners.map(c => c.mx));
+  const myMin = Math.min(...imgCorners.map(c => c.my));
+  const myMax = Math.max(...imgCorners.map(c => c.my));
 
-  const mxMin = Math.min(...corners.map(c => c.mx));
-  const mxMax = Math.max(...corners.map(c => c.mx));
-  const myMin = Math.min(...corners.map(c => c.my));
-  const myMax = Math.max(...corners.map(c => c.my));
-
-  // Step: ~40 screen pixels apart, but capped so total dots stay ≤ 1500.
+  // Screen pixels per image pixel at current zoom
   const ptA = map.latLngToContainerPoint(L.latLng(0, 0));
   const ptB = map.latLngToContainerPoint(L.latLng(0, 1));
   const screenPerImgPx = Math.hypot(ptB.x - ptA.x, ptB.y - ptA.y);
   const imgScale = pxPerMetre(T);
   if (screenPerImgPx <= 0 || imgScale <= 0) return;
-  const stepZoom = 40 / (screenPerImgPx * imgScale);
-  const stepCap  = Math.sqrt((mxMax - mxMin) * (myMax - myMin) / 1500);
-  const step = Math.max(stepZoom, stepCap, 1e-6);
 
-  const x0 = Math.ceil(mxMin / step) * step;
-  const x1 = Math.floor(mxMax / step) * step;
-  const y0 = Math.ceil(myMin / step) * step;
-  const y1 = Math.floor(myMax / step) * step;
+  // Visible area in image-pixel space clipped to image bounds.
+  // CRS.Simple convention: L.latLng(imgH - py, px).
+  const mb = map.getBounds();
+  const vPxW = Math.max(0,    Math.min(imgW, mb.getWest()));
+  const vPxE = Math.min(imgW, Math.max(0,   mb.getEast()));
+  const vPyN = Math.max(0,    Math.min(imgH, imgH - mb.getNorth()));
+  const vPyS = Math.min(imgH, Math.max(0,   imgH - mb.getSouth()));
+
+  // Visible corners → metres; clamp iteration to image extent
+  const visCorners = [
+    pixelToMeters(T, vPxW, vPyN), pixelToMeters(T, vPxE, vPyN),
+    pixelToMeters(T, vPxW, vPyS), pixelToMeters(T, vPxE, vPyS)
+  ].filter(Boolean);
+  if (!visCorners.length) return;
+  const vmxMin = Math.max(mxMin, Math.min(...visCorners.map(c => c.mx)));
+  const vmxMax = Math.min(mxMax, Math.max(...visCorners.map(c => c.mx)));
+  const vmyMin = Math.max(myMin, Math.min(...visCorners.map(c => c.my)));
+  const vmyMax = Math.min(myMax, Math.max(...visCorners.map(c => c.my)));
+
+  // Step: ~40 screen pixels. Cap so ≤2000 dots in visible area. stepMax prevents
+  // zero dots when zoomed out far enough that stepZoom exceeds the visible span.
+  const stepZoom = 40 / (screenPerImgPx * imgScale);
+  const visSpan  = Math.max(vmxMax - vmxMin, vmyMax - vmyMin);
+  const stepCap  = Math.sqrt((vmxMax - vmxMin) * (vmyMax - vmyMin) / 2000);
+  const stepMax  = visSpan > 0 ? visSpan / 3 : stepZoom;
+  const step = Math.min(Math.max(stepZoom, stepCap, 1e-6), stepMax);
+
+  const x0 = Math.ceil(vmxMin / step) * step;
+  const x1 = Math.floor(vmxMax / step) * step;
+  const y0 = Math.ceil(vmyMin / step) * step;
+  const y1 = Math.floor(vmyMax / step) * step;
 
   const hull = convexHull2D(T.coords);
 
