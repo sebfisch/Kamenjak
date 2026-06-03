@@ -92,6 +92,22 @@
     }
     #heatmap-btn.active { background: #1a237e; color: white; }
 
+    /* ── Lambda bar ── */
+    #lambda-bar {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      z-index: 1000; display: none;
+      background: rgba(0,0,0,0.82); backdrop-filter: blur(4px);
+      padding: 8px 84px 8px 70px; /* right: clear FABs; left: clear zoom */
+      align-items: center; gap: 10px;
+    }
+    #lambda-bar.visible { display: flex; }
+    #lambda-val {
+      color: white; font-size: 12px; font-family: monospace;
+      min-width: 58px; text-align: right;
+    }
+    #lambda-slider { flex: 1; accent-color: #2196F3; cursor: pointer; }
+    #lambda-hint { color: #888; font-size: 10px; white-space: nowrap; }
+
     /* point-count badge */
     #cal-count {
       position: absolute; top: -3px; right: -3px;
@@ -272,6 +288,11 @@
   </div>
 </div>
 
+<div id="lambda-bar">
+  <span id="lambda-val">λ = 1000</span>
+  <input id="lambda-slider" type="range" min="0" max="100" step="1" value="50">
+  <span id="lambda-hint">fit ◄ ► smooth</span>
+</div>
 <div id="toast"></div>
 
 <script src="leaflet.js"></script>
@@ -379,43 +400,42 @@ function geoToMeters(lat, lng, lat0, lon0) {
 let calPoints = [];
 try { const s = localStorage.getItem('kmap-pts2'); if (s) calPoints = JSON.parse(s); } catch (_) {}
 
-// Solve [x, y, 1] · β = out via Gaussian elimination with partial pivoting.
-// coords: array of {x, y}; out: array of target values.
-function linreg3(coords, out) {
-  const n = coords.length;
-  let sx=0, sy=0, sout=0, sx2=0, sxy=0, sy2=0, sxout=0, syout=0;
-  for (let i=0; i<n; i++) {
-    const x=coords[i].x, y=coords[i].y, o=out[i];
-    sx+=x; sy+=y; sout+=o;
-    sx2+=x*x; sxy+=x*y; sy2+=y*y;
-    sxout+=x*o; syout+=y*o;
-  }
-  // Normal equations: (XᵀX) β = Xᵀy
-  const A = [
-    [sx2, sxy, sx, sxout],
-    [sxy, sy2, sy, syout],
-    [sx,  sy,  n,  sout ]
-  ];
-  for (let col=0; col<3; col++) {
+// Default smoothing: slider 50/100 → log10(λ)=3 → λ=1000
+let lambda = 1000;
+
+// Gaussian elimination with partial (row) pivoting.
+// Mandatory for the TPS block system, which is indefinite (trailing zero block).
+// A is n×n (array of rows); b is length-n RHS. Returns x or null if singular.
+function gaussSolve(A, b) {
+  const n = A.length;
+  const M = A.map((row, i) => [...row, b[i]]);
+  for (let col = 0; col < n; col++) {
     let maxRow = col;
-    for (let row=col+1; row<3; row++) if (Math.abs(A[row][col]) > Math.abs(A[maxRow][col])) maxRow = row;
-    [A[col], A[maxRow]] = [A[maxRow], A[col]];
-    if (Math.abs(A[col][col]) < 1e-14) return null; // singular (collinear points)
-    for (let row=col+1; row<3; row++) {
-      const f = A[row][col] / A[col][col];
-      for (let j=col; j<4; j++) A[row][j] -= f * A[col][j];
+    for (let row = col + 1; row < n; row++)
+      if (Math.abs(M[row][col]) > Math.abs(M[maxRow][col])) maxRow = row;
+    [M[col], M[maxRow]] = [M[maxRow], M[col]];
+    if (Math.abs(M[col][col]) < 1e-12) return null;
+    for (let row = col + 1; row < n; row++) {
+      const f = M[row][col] / M[col][col];
+      for (let j = col; j <= n; j++) M[row][j] -= f * M[col][j];
     }
   }
-  const x = [0, 0, 0];
-  for (let i=2; i>=0; i--) {
-    x[i] = A[i][3];
-    for (let j=i+1; j<3; j++) x[i] -= A[i][j] * x[j];
-    x[i] /= A[i][i];
+  const x = new Array(n).fill(0);
+  for (let i = n - 1; i >= 0; i--) {
+    x[i] = M[i][n];
+    for (let j = i + 1; j < n; j++) x[i] -= M[i][j] * x[j];
+    x[i] /= M[i][i];
   }
-  return x; // [a, b, c]  where out ≈ a*x + b*y + c
+  return x;
 }
 
-function fitFromPoints(pts) {
+// TPS kernel U(r) = r² log r  (U(0) = 0 by continuity)
+function tpsU(r) { return r < 1e-10 ? 0 : r * r * Math.log(r); }
+
+// Fit a weighted smoothing TPS (geo → pixel) with smoothing parameter lam.
+// Solves the (n+3)×(n+3) saddle-point system with partial pivoting.
+// Returns T object with affine coefficients + TPS weights, or null if singular.
+function fitTPS(pts, lam) {
   if (pts.length < 3) return null;
   const lat0 = pts.reduce((s, p) => s + p.raw.lat, 0) / pts.length;
   const lon0 = pts.reduce((s, p) => s + p.raw.lng, 0) / pts.length;
@@ -423,17 +443,54 @@ function fitFromPoints(pts) {
     const { mx, my } = geoToMeters(p.raw.lat, p.raw.lng, lat0, lon0);
     return { x: mx, y: my };
   });
-  const rx = linreg3(coords, pts.map(p => p.px));
-  const ry = linreg3(coords, pts.map(p => p.py));
-  if (!rx || !ry) return null;
-  return { lat0, lon0,
-           ax: rx[0], bx: rx[1], cx: rx[2],
-           ay: ry[0], by: ry[1], cy: ry[2] };
+  const n = pts.length, dim = n + 3;
+
+  // Build (n+3)×(n+3) block matrix [ K+λI  P ; Pᵀ  0 ]
+  const A = [];
+  for (let i = 0; i < n; i++) {
+    const row = new Array(dim).fill(0);
+    for (let j = 0; j < n; j++) {
+      const dx = coords[i].x - coords[j].x, dy = coords[i].y - coords[j].y;
+      row[j] = tpsU(Math.sqrt(dx*dx + dy*dy));
+      if (i === j) row[j] += lam;
+    }
+    row[n] = 1; row[n+1] = coords[i].x; row[n+2] = coords[i].y;
+    A.push(row);
+  }
+  // Constraint rows: Pᵀ w = 0
+  for (let j = 0; j < 3; j++) {
+    const row = new Array(dim).fill(0);
+    for (let i = 0; i < n; i++) row[i] = j === 0 ? 1 : j === 1 ? coords[i].x : coords[i].y;
+    A.push(row);
+  }
+
+  const bpx = [...pts.map(p => p.px), 0, 0, 0];
+  const bpy = [...pts.map(p => p.py), 0, 0, 0];
+  const solX = gaussSolve(A, bpx);
+  const solY = gaussSolve(A, bpy);
+  if (!solX || !solY) return null;
+
+  // solX = [w_0..w_{n-1}, cx, ax, bx]  (affine: px = cx + ax*mx + bx*my + Σwi·U)
+  return {
+    lat0, lon0, coords,
+    wx: solX.slice(0, n), cx: solX[n], ax: solX[n+1], bx: solX[n+2],
+    wy: solY.slice(0, n), cy: solY[n], ay: solY[n+1], by: solY[n+2]
+  };
 }
 
-// Apply affine transform in metres space: (mx, my) → {px, py}
+// Evaluate transform at (mx, my): affine part + TPS radial sum.
 function applyTransformM(t, mx, my) {
-  return { px: t.ax*mx + t.bx*my + t.cx, py: t.ay*mx + t.by*my + t.cy };
+  let px = t.cx + t.ax*mx + t.bx*my;
+  let py = t.cy + t.ay*mx + t.by*my;
+  if (t.wx) {
+    for (let i = 0; i < t.wx.length; i++) {
+      const dx = mx - t.coords[i].x, dy = my - t.coords[i].y;
+      const u = tpsU(Math.sqrt(dx*dx + dy*dy));
+      px += t.wx[i] * u;
+      py += t.wy[i] * u;
+    }
+  }
+  return { px, py };
 }
 
 // GPS coords → image pixel coords {px, py}
@@ -443,15 +500,10 @@ function applyTransform(t, raw) {
   return applyTransformM(t, mx, my);
 }
 
-// Pixels per metre: average of the two column norms of the metres→pixel Jacobian.
-// Since the Jacobian is [ax bx; ay by] (constant for affine), the column norms
-// are directly in px/m — no degree-conversion or cos(lat) factor needed.
-function pxPerMetre(t) {
-  if (!t) return 0;
-  const s1 = Math.sqrt(t.ax*t.ax + t.ay*t.ay);
-  const s2 = Math.sqrt(t.bx*t.bx + t.by*t.by);
-  return (s1 + s2) / 2;
-}
+// Representative pixels-per-metre: scale at the metre-space origin (= centroid
+// of control points).  Uses the same finite-difference path as localScale so it
+// is correct for both the affine and TPS cases.
+function pxPerMetre(t) { return t ? localScale(t, 0, 0) : 0; }
 
 // Pixel residual for point p under transform t, converted to metres
 function pixelResidualM(p, t) {
@@ -481,10 +533,15 @@ function pixelToMeters(t, px, py) {
            my: (-t.ay * dpx + t.ax * dpy) / det };
 }
 
-// Local scale s = √(s1·s2) ≈ √|det J| for the metres→pixel Jacobian.
-// For affine this is constant; later stages override it.
-function localScale(t, _mx, _my) {
-  return Math.sqrt(Math.abs(t.ax * t.by - t.bx * t.ay));
+// Local scale s = √|det J| via 1 m central finite differences.
+// h=1 m keeps the numerator numerically healthy at any realistic map scale.
+function localScale(t, mx, my) {
+  const h = 1;
+  const p0 = applyTransformM(t, mx-h, my), p1 = applyTransformM(t, mx+h, my);
+  const q0 = applyTransformM(t, mx, my-h), q1 = applyTransformM(t, mx, my+h);
+  const jxx = (p1.px - p0.px) / (2*h), jyx = (p1.py - p0.py) / (2*h);
+  const jxy = (q1.px - q0.px) / (2*h), jyy = (q1.py - q0.py) / (2*h);
+  return Math.sqrt(Math.abs(jxx * jyy - jyx * jxy));
 }
 
 function drawGrid() {
@@ -515,20 +572,25 @@ function drawGrid() {
   const y1 = Math.ceil(myMax  / step) * step;
 
   const style = { color: 'rgba(0,200,255,0.55)', weight: 1, interactive: false };
+  const SEG = 20; // subdivisions per line — captures TPS curvature
 
-  // Vertical lines (constant mx)
+  function toLL(p) { return L.latLng(imgH - p.py, p.px); }
+
+  // Vertical lines (constant mx, varying my)
   for (let mx = x0; mx <= x1 + step * 1e-4; mx += step) {
-    const p0 = applyTransformM(T, mx, y0);
-    const p1 = applyTransformM(T, mx, y1);
-    L.polyline([L.latLng(imgH - p0.py, p0.px), L.latLng(imgH - p1.py, p1.px)], style)
-      .addTo(gridLayer);
+    const pts = [];
+    for (let k = 0; k <= SEG; k++) {
+      pts.push(toLL(applyTransformM(T, mx, y0 + (y1 - y0) * k / SEG)));
+    }
+    L.polyline(pts, style).addTo(gridLayer);
   }
-  // Horizontal lines (constant my)
+  // Horizontal lines (constant my, varying mx)
   for (let my = y0; my <= y1 + step * 1e-4; my += step) {
-    const p0 = applyTransformM(T, x0, my);
-    const p1 = applyTransformM(T, x1, my);
-    L.polyline([L.latLng(imgH - p0.py, p0.px), L.latLng(imgH - p1.py, p1.px)], style)
-      .addTo(gridLayer);
+    const pts = [];
+    for (let k = 0; k <= SEG; k++) {
+      pts.push(toLL(applyTransformM(T, x0 + (x1 - x0) * k / SEG, my)));
+    }
+    L.polyline(pts, style).addTo(gridLayer);
   }
 }
 
@@ -584,10 +646,11 @@ function drawHeatmap() {
 }
 
 function fitTransform() {
-  T = fitFromPoints(calPoints);
+  T = fitTPS(calPoints, lambda);
   updateCompass();
   drawGrid();
   drawHeatmap();
+  document.getElementById('lambda-bar').classList.toggle('visible', T !== null);
 }
 
 // North direction in pixel space is the my-column of J: (T.bx, T.by) —
@@ -919,6 +982,25 @@ document.getElementById('cal-reset').addEventListener('click', () => {
   calPoints = [];
   savePoints(); fitTransform(); updateBadge(); closeCalUI(); refreshMarker();
   toast('All calibration points cleared.');
+});
+
+// ── Lambda slider ─────────────────────────────────────────────────────────────
+// Log-scale mapping: slider 0→100 maps log10(λ) from −2 to +8.
+const LLOG_MIN = -2, LLOG_MAX = 8;
+function sliderToLambda(v) { return Math.pow(10, v * (LLOG_MAX - LLOG_MIN) / 100 + LLOG_MIN); }
+
+function fmtLambda(lam) {
+  if (lam >= 1e7) return (lam/1e6).toPrecision(2) + ' M';
+  if (lam >= 1e4) return (lam/1e3).toPrecision(2) + ' k';
+  if (lam >= 10)  return lam.toPrecision(3);
+  return lam.toPrecision(2);
+}
+
+document.getElementById('lambda-slider').addEventListener('input', e => {
+  lambda = sliderToLambda(+e.target.value);
+  document.getElementById('lambda-val').textContent = 'λ = ' + fmtLambda(lambda);
+  fitTransform();
+  refreshMarker();
 });
 
 // ── Heatmap toggle ────────────────────────────────────────────────────────────
