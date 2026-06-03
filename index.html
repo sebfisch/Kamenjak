@@ -85,6 +85,13 @@
     }
     #load-btn svg { width: 22px; height: 22px; fill: #444; }
 
+    #heatmap-btn {
+      bottom: 236px; width: 44px; height: 44px;
+      background: white; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      font-size: 20px; color: #444;
+    }
+    #heatmap-btn.active { background: #1a237e; color: white; }
+
     /* point-count badge */
     #cal-count {
       position: absolute; top: -3px; right: -3px;
@@ -231,6 +238,7 @@
   <svg viewBox="0 0 24 24"><path d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1
     0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-2 8h-3v3h-2v-3h-3l4-4 4 4z"/></svg>
 </button>
+<button id="heatmap-btn" class="fab" title="Toggle scale heatmap">⊞</button>
 <input id="map-file" type="file" accept="image/*,.pdf" style="display:none">
 
 <button id="cal-btn" class="fab" title="Calibrate location">
@@ -352,29 +360,41 @@ setTimeout(hideLoader, 12000);
 // ── Calibration: N-point affine least-squares (GPS → image pixels) ───────────
 // Points: { raw:{lat,lng}, px, py, accuracy, timestamp }
 //   px, py = image pixel coords; py=0 is top-left, increases downward.
-// Transform T: full affine — handles any map orientation, not just North-up.
-//   px = ax*lat + bx*lng + cx
-//   py = ay*lat + by*lng + cy
+// Transform T: full affine in local-meters space — handles any map orientation.
+//   px = ax*mx + bx*my + cx,  py = ay*mx + by*my + cy
+//   where mx,my are local East/North metres from the mean control-point origin.
 // Requires ≥ 3 non-collinear points; returns null otherwise.
+
+const R_EARTH = 6371000;
+
+// Convert (lat, lng) to local East/North metres relative to (lat0, lon0).
+function geoToMeters(lat, lng, lat0, lon0) {
+  const cos0 = Math.cos(lat0 * Math.PI / 180);
+  return {
+    mx: (lng - lon0) * cos0 * R_EARTH * Math.PI / 180,
+    my: (lat - lat0)        * R_EARTH * Math.PI / 180
+  };
+}
 
 let calPoints = [];
 try { const s = localStorage.getItem('kmap-pts2'); if (s) calPoints = JSON.parse(s); } catch (_) {}
 
-// Solve [lat, lng, 1] · β = out via Gaussian elimination (3 unknowns, n≥3 rows).
-function linreg3(pts, out) {
-  const n = pts.length;
-  let slat=0, slng=0, sout=0, slat2=0, slatlng=0, slng2=0, slatout=0, slngout=0;
+// Solve [x, y, 1] · β = out via Gaussian elimination with partial pivoting.
+// coords: array of {x, y}; out: array of target values.
+function linreg3(coords, out) {
+  const n = coords.length;
+  let sx=0, sy=0, sout=0, sx2=0, sxy=0, sy2=0, sxout=0, syout=0;
   for (let i=0; i<n; i++) {
-    const lat=pts[i].raw.lat, lng=pts[i].raw.lng, o=out[i];
-    slat+=lat; slng+=lng; sout+=o;
-    slat2+=lat*lat; slatlng+=lat*lng; slng2+=lng*lng;
-    slatout+=lat*o; slngout+=lng*o;
+    const x=coords[i].x, y=coords[i].y, o=out[i];
+    sx+=x; sy+=y; sout+=o;
+    sx2+=x*x; sxy+=x*y; sy2+=y*y;
+    sxout+=x*o; syout+=y*o;
   }
-  // Normal equations: (X^T X) β = X^T y
+  // Normal equations: (XᵀX) β = Xᵀy
   const A = [
-    [slat2,   slatlng, slat, slatout],
-    [slatlng, slng2,   slng, slngout],
-    [slat,    slng,    n,    sout   ]
+    [sx2, sxy, sx, sxout],
+    [sxy, sy2, sy, syout],
+    [sx,  sy,  n,  sout ]
   ];
   for (let col=0; col<3; col++) {
     let maxRow = col;
@@ -392,33 +412,45 @@ function linreg3(pts, out) {
     for (let j=i+1; j<3; j++) x[i] -= A[i][j] * x[j];
     x[i] /= A[i][i];
   }
-  return x; // [a, b, c]  where out ≈ a*lat + b*lng + c
+  return x; // [a, b, c]  where out ≈ a*x + b*y + c
 }
 
 function fitFromPoints(pts) {
   if (pts.length < 3) return null;
-  const rx = linreg3(pts, pts.map(p => p.px));
-  const ry = linreg3(pts, pts.map(p => p.py));
+  const lat0 = pts.reduce((s, p) => s + p.raw.lat, 0) / pts.length;
+  const lon0 = pts.reduce((s, p) => s + p.raw.lng, 0) / pts.length;
+  const coords = pts.map(p => {
+    const { mx, my } = geoToMeters(p.raw.lat, p.raw.lng, lat0, lon0);
+    return { x: mx, y: my };
+  });
+  const rx = linreg3(coords, pts.map(p => p.px));
+  const ry = linreg3(coords, pts.map(p => p.py));
   if (!rx || !ry) return null;
-  return { ax: rx[0], bx: rx[1], cx: rx[2],
+  return { lat0, lon0,
+           ax: rx[0], bx: rx[1], cx: rx[2],
            ay: ry[0], by: ry[1], cy: ry[2] };
+}
+
+// Apply affine transform in metres space: (mx, my) → {px, py}
+function applyTransformM(t, mx, my) {
+  return { px: t.ax*mx + t.bx*my + t.cx, py: t.ay*mx + t.by*my + t.cy };
 }
 
 // GPS coords → image pixel coords {px, py}
 function applyTransform(t, raw) {
   if (!t) return null;
-  return { px: t.ax*raw.lat + t.bx*raw.lng + t.cx,
-           py: t.ay*raw.lat + t.by*raw.lng + t.cy };
+  const { mx, my } = geoToMeters(raw.lat, raw.lng, t.lat0, t.lon0);
+  return applyTransformM(t, mx, my);
 }
 
-// Approximate pixels-per-metre from the affine scale columns
-function pxPerMetre(t, lat) {
+// Pixels per metre: average of the two column norms of the metres→pixel Jacobian.
+// Since the Jacobian is [ax bx; ay by] (constant for affine), the column norms
+// are directly in px/m — no degree-conversion or cos(lat) factor needed.
+function pxPerMetre(t) {
   if (!t) return 0;
-  const pixPerDegLat = Math.sqrt(t.ax*t.ax + t.ay*t.ay);
-  const pixPerDegLng = Math.sqrt(t.bx*t.bx + t.by*t.by);
-  const mLat = pixPerDegLat / 111320;
-  const mLng = pixPerDegLng / (111320 * Math.cos(lat * Math.PI/180));
-  return (mLat + mLng) / 2;
+  const s1 = Math.sqrt(t.ax*t.ax + t.ay*t.ay);
+  const s2 = Math.sqrt(t.bx*t.bx + t.by*t.by);
+  return (s1 + s2) / 2;
 }
 
 // Pixel residual for point p under transform t, converted to metres
@@ -426,7 +458,7 @@ function pixelResidualM(p, t) {
   const pred = applyTransform(t, p.raw);
   if (!pred) return Infinity;
   const dPx = pred.px - p.px, dPy = pred.py - p.py;
-  const scale = pxPerMetre(t, p.raw.lat);
+  const scale = pxPerMetre(t);
   return scale > 0 ? Math.sqrt(dPx*dPx + dPy*dPy) / scale : Infinity;
 }
 
@@ -435,20 +467,138 @@ function rmseMetres(pts, t) {
 }
 
 let T = null;
+
+// ── Instrumentation overlays ──────────────────────────────────────────────────
+
+let gridLayer = L.layerGroup().addTo(map);
+
+// Inverse of the affine in metres-space: image pixel → {mx, my}
+function pixelToMeters(t, px, py) {
+  const det = t.ax * t.by - t.bx * t.ay;
+  if (Math.abs(det) < 1e-14) return null;
+  const dpx = px - t.cx, dpy = py - t.cy;
+  return { mx: ( t.by * dpx - t.bx * dpy) / det,
+           my: (-t.ay * dpx + t.ax * dpy) / det };
+}
+
+// Local scale s = √(s1·s2) ≈ √|det J| for the metres→pixel Jacobian.
+// For affine this is constant; later stages override it.
+function localScale(t, _mx, _my) {
+  return Math.sqrt(Math.abs(t.ax * t.by - t.bx * t.ay));
+}
+
+function drawGrid() {
+  gridLayer.clearLayers();
+  if (!T || !imgW || !imgH) return;
+
+  const corners = [
+    pixelToMeters(T, 0, 0), pixelToMeters(T, imgW, 0),
+    pixelToMeters(T, 0, imgH), pixelToMeters(T, imgW, imgH)
+  ].filter(Boolean);
+  if (!corners.length) return;
+
+  const mxMin = Math.min(...corners.map(c => c.mx));
+  const mxMax = Math.max(...corners.map(c => c.mx));
+  const myMin = Math.min(...corners.map(c => c.my));
+  const myMax = Math.max(...corners.map(c => c.my));
+
+  // Nice step: ~10 divisions along the larger dimension
+  const span = Math.max(mxMax - mxMin, myMax - myMin);
+  const raw = span / 10;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  const step = norm < 2 ? mag : norm < 5 ? 2 * mag : 5 * mag;
+
+  const x0 = Math.floor(mxMin / step) * step;
+  const x1 = Math.ceil(mxMax  / step) * step;
+  const y0 = Math.floor(myMin / step) * step;
+  const y1 = Math.ceil(myMax  / step) * step;
+
+  const style = { color: 'rgba(0,200,255,0.55)', weight: 1, interactive: false };
+
+  // Vertical lines (constant mx)
+  for (let mx = x0; mx <= x1 + step * 1e-4; mx += step) {
+    const p0 = applyTransformM(T, mx, y0);
+    const p1 = applyTransformM(T, mx, y1);
+    L.polyline([L.latLng(imgH - p0.py, p0.px), L.latLng(imgH - p1.py, p1.px)], style)
+      .addTo(gridLayer);
+  }
+  // Horizontal lines (constant my)
+  for (let my = y0; my <= y1 + step * 1e-4; my += step) {
+    const p0 = applyTransformM(T, x0, my);
+    const p1 = applyTransformM(T, x1, my);
+    L.polyline([L.latLng(imgH - p0.py, p0.px), L.latLng(imgH - p1.py, p1.px)], style)
+      .addTo(gridLayer);
+  }
+}
+
+let heatmapOverlay = null;
+let heatmapBlobUrl = null;
+let showHeatmap = false;
+
+function drawHeatmap() {
+  if (heatmapOverlay) { map.removeLayer(heatmapOverlay); heatmapOverlay = null; }
+  if (heatmapBlobUrl) { URL.revokeObjectURL(heatmapBlobUrl); heatmapBlobUrl = null; }
+  if (!T || !showHeatmap || !imgW || !imgH) return;
+
+  const cellW = Math.ceil(imgW / 32);
+  const cellH = Math.ceil(imgH / 32);
+  const cols  = Math.ceil(imgW / cellW);
+  const rows  = Math.ceil(imgH / cellH);
+
+  const scales = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const m = pixelToMeters(T, (c + 0.5) * cellW, (r + 0.5) * cellH);
+      scales.push(m ? localScale(T, m.mx, m.my) : 0);
+    }
+  }
+
+  const sorted = [...scales].filter(s => s > 0).sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)] || 1;
+
+  function cellColor(s) {
+    // Log2-ratio relative to median, clamped to [-2, 2]
+    const t = Math.max(0, Math.min(1, (Math.log2(s / median) + 2) / 4));
+    const r = Math.round(t < 0.5 ? 0         : (t - 0.5) * 2 * 220);
+    const g = Math.round(t < 0.5 ? t * 2 * 180 : (1 - (t - 0.5) * 2) * 180);
+    const b = Math.round(t < 0.5 ? (1 - t*2) * 220 : 0);
+    return `rgba(${r},${g},${b},0.35)`;
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = imgW; canvas.height = imgH;
+  const ctx = canvas.getContext('2d');
+  let idx = 0;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      ctx.fillStyle = cellColor(scales[idx++] || median);
+      ctx.fillRect(c * cellW, r * cellH, cellW, cellH);
+    }
+  }
+  canvas.toBlob(blob => {
+    heatmapBlobUrl = URL.createObjectURL(blob);
+    heatmapOverlay = L.imageOverlay(heatmapBlobUrl, [[0, 0], [imgH, imgW]],
+      { opacity: 1, interactive: false }).addTo(map);
+  });
+}
+
 function fitTransform() {
   T = fitFromPoints(calPoints);
   updateCompass();
+  drawGrid();
+  drawHeatmap();
 }
 
-// North direction in pixel space is the vector (T.ax, T.ay) — the pixel
-// displacement produced by a unit increase in latitude. Rotating the
-// up-pointing needle by atan2(ax, −ay) aligns its red tip with screen-North.
+// North direction in pixel space is the my-column of J: (T.bx, T.by) —
+// the pixel displacement per metre of northward travel. Rotating the
+// up-pointing needle by atan2(bx, −by) aligns its red tip with screen-North.
 function updateCompass() {
   const el = document.getElementById('compass');
-  if (!T || Math.sqrt(T.ax*T.ax + T.ay*T.ay) < 1e-10) {
+  if (!T || Math.sqrt(T.bx*T.bx + T.by*T.by) < 1e-10) {
     el.classList.remove('visible'); return;
   }
-  const angle = Math.atan2(T.ax, -T.ay) * 180 / Math.PI;
+  const angle = Math.atan2(T.bx, -T.by) * 180 / Math.PI;
   document.getElementById('compass-needle').setAttribute('transform', `rotate(${angle})`);
   el.classList.add('visible');
 }
@@ -519,7 +669,7 @@ function isWithinBounds(pixelPos) {
 
 function updateLocation(pixelPos, accuracyM) {
   const latlng = L.latLng(imgH - pixelPos.py, pixelPos.px);
-  const accPx = accuracyM * (rawGps ? pxPerMetre(T, rawGps.lat) : 0);
+  const accPx = accuracyM * (rawGps ? pxPerMetre(T) : 0);
   const show = calPoints.length >= 3 && isWithinBounds(pixelPos);
   if (!userMarker) {
     accCircle  = L.circle(latlng, { radius: accPx, color: '#2196F3', weight: 1,
@@ -688,12 +838,26 @@ function showCalMarkers() {
     marker.on('click', () => openPtConfirm(i));
     calMarkers.push(marker);
     if (T) {
-      const r = p.accuracy * pxPerMetre(T, p.raw.lat);
+      const r = p.accuracy * pxPerMetre(T);
       const circle = L.circle(latlng, {
         radius: r, color: '#FF9800', weight: 1,
         fillColor: '#FF9800', fillOpacity: 0.08, interactive: false
       }).addTo(map);
       calMarkers.push(circle);
+
+      // Residual arrow: hollow circle at predicted position → filled dot at actual
+      const pred = applyTransform(T, p.raw);
+      if (pred) {
+        const predLL = L.latLng(imgH - pred.py, pred.px);
+        const arrow = L.polyline([predLL, latlng], {
+          color: 'rgba(255,80,80,0.85)', weight: 2, interactive: false
+        }).addTo(map);
+        calMarkers.push(arrow);
+        const predDot = L.circleMarker(predLL, {
+          radius: 4, color: '#ff5050', fill: false, weight: 1.5, interactive: false
+        }).addTo(map);
+        calMarkers.push(predDot);
+      }
     }
   });
 }
@@ -755,6 +919,13 @@ document.getElementById('cal-reset').addEventListener('click', () => {
   calPoints = [];
   savePoints(); fitTransform(); updateBadge(); closeCalUI(); refreshMarker();
   toast('All calibration points cleared.');
+});
+
+// ── Heatmap toggle ────────────────────────────────────────────────────────────
+document.getElementById('heatmap-btn').addEventListener('click', () => {
+  showHeatmap = !showHeatmap;
+  document.getElementById('heatmap-btn').classList.toggle('active', showHeatmap);
+  drawHeatmap();
 });
 
 // ── Load Map button ───────────────────────────────────────────────────────────
