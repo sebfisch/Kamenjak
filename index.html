@@ -667,18 +667,16 @@ function fitTransform() {
   document.body.classList.toggle('lambda-on', hasT);
 }
 
-// North direction at the control-point centroid (metre-space origin), sampled
-// via finite differences so TPS warp contributions are included — not just the
-// global affine part (T.bx, T.by), which is wrong at low λ.
+// Compass uses the affine component (T.bx, T.by) — the global North direction
+// of the best-fit orientation across all control points, independent of local
+// TPS warp.  This is the correct referent for a compass: the map's overall
+// "which way is up", not the Jacobian at any particular warped location.
 function updateCompass() {
   const el = document.getElementById('compass');
-  if (!T) { el.classList.remove('visible'); return; }
-  const h = 1; // 1 m — same step as localScale
-  const p0 = applyTransformM(T, 0, -h);
-  const p1 = applyTransformM(T, 0,  h);
-  const dx = p1.px - p0.px, dy = p1.py - p0.py;
-  if (dx*dx + dy*dy < 1e-10) { el.classList.remove('visible'); return; }
-  const angle = Math.atan2(dx, -dy) * 180 / Math.PI;
+  if (!T || T.bx*T.bx + T.by*T.by < 1e-20) {
+    el.classList.remove('visible'); return;
+  }
+  const angle = Math.atan2(T.bx, -T.by) * 180 / Math.PI;
   document.getElementById('compass-needle').setAttribute('transform', `rotate(${angle})`);
   el.classList.add('visible');
 }
