@@ -621,23 +621,20 @@ function drawDiag() {
   const imgScale = pxPerMetre(T);
   if (screenPerImgPx <= 0 || imgScale <= 0) return;
 
-  // Image extent in metres via OLS affine inverse — NOT pixelToMeters (TPS affine
-  // inverse).  The TPS affine component is coupled to the radial weights, so
-  // applyTransformM at a TPS-affine-inverse point gives (pixel + radial), which
-  // can be completely outside the image.  OLS is the uncoupled linear fit, so its
-  // inverse gives metre coords that TPS maps approximately back to the image.
-  const dolsD = T.olsAx * T.olsBy - T.olsBx * T.olsAy;
-  if (Math.abs(dolsD) < 1e-14) return;
-  function olsInv(px, py) {
-    const dpx = px - T.olsCx, dpy = py - T.olsCy;
-    return { mx: ( T.olsBy*dpx - T.olsBx*dpy) / dolsD,
-             my: (-T.olsAy*dpx + T.olsAx*dpy) / dolsD };
-  }
-  const imgMPts = [olsInv(0,0), olsInv(imgW,0), olsInv(0,imgH), olsInv(imgW,imgH)];
-  const imxMin = Math.min(...imgMPts.map(c => c.mx));
-  const imxMax = Math.max(...imgMPts.map(c => c.mx));
-  const imyMin = Math.min(...imgMPts.map(c => c.my));
-  const imyMax = Math.max(...imgMPts.map(c => c.my));
+  // Metre bounds from calibration point coordinates, which are guaranteed to
+  // produce in-image pixels via applyTransformM.  Affine inversion of image
+  // corners (OLS or TPS) fails because applyTransformM adds radial TPS terms
+  // at those corners that can push the result outside the image entirely.
+  // Extend by one calibration span on each side to cover image areas beyond
+  // the control points; the ok-check inside addLine filters anything that
+  // still maps outside.
+  const xs = T.coords.map(c => c.x), ys = T.coords.map(c => c.y);
+  const cpxMin = Math.min(...xs), cpxMax = Math.max(...xs);
+  const cpyMin = Math.min(...ys), cpyMax = Math.max(...ys);
+  const extX = Math.max(cpxMax - cpxMin, 50);
+  const extY = Math.max(cpyMax - cpyMin, 50);
+  const imxMin = cpxMin - extX, imxMax = cpxMax + extX;
+  const imyMin = cpyMin - extY, imyMax = cpyMax + extY;
   const imgSpanM = Math.max(imxMax - imxMin, imyMax - imyMin);
   if (imgSpanM <= 0) return;
 
