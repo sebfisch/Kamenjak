@@ -607,74 +607,40 @@ function localScale(t, mx, my) {
   return Math.sqrt(Math.abs(jxx * jyy - jyx * jxy));
 }
 
-// Diagnostic dot overlay: colored dots at grid intersections.
-// Color = local scale relative to median (blue=compressed, green=median, red=magnified).
-// Displacement arrows only inside convex hull of control points — TPS extrapolates
-// via U(r)=r²logr which grows unboundedly outside, making arrows meaningless there.
-// Canvas renderer keeps redraw fast; dot count is capped to the visible area.
+// Diagnostic dot overlay: dots at a fixed screen-space grid (40 px spacing).
+// Each dot samples the image coordinate currently under that screen position, so
+// the grid is always rectangular on screen regardless of map rotation.
+// Color = local scale at that point. Arrows (inside control-point hull only) show
+// the TPS-vs-OLS displacement vector rooted at the dot.
 function drawDiag() {
   diagLayer.clearLayers();
   if (!T || !showDiag || !imgW || !imgH) return;
 
-  // Full image extent in metres
-  const imgCorners = [
-    pixelToMeters(T, 0, 0), pixelToMeters(T, imgW, 0),
-    pixelToMeters(T, 0, imgH), pixelToMeters(T, imgW, imgH)
-  ].filter(Boolean);
-  if (!imgCorners.length) return;
-  const mxMin = Math.min(...imgCorners.map(c => c.mx));
-  const mxMax = Math.max(...imgCorners.map(c => c.mx));
-  const myMin = Math.min(...imgCorners.map(c => c.my));
-  const myMax = Math.max(...imgCorners.map(c => c.my));
-
-  // Screen pixels per image pixel at current zoom
-  const ptA = map.latLngToContainerPoint(L.latLng(0, 0));
-  const ptB = map.latLngToContainerPoint(L.latLng(0, 1));
-  const screenPerImgPx = Math.hypot(ptB.x - ptA.x, ptB.y - ptA.y);
-  const imgScale = pxPerMetre(T);
-  if (screenPerImgPx <= 0 || imgScale <= 0) return;
-
-  // Visible area in image-pixel space clipped to image bounds.
-  // CRS.Simple convention: L.latLng(imgH - py, px).
-  const mb = map.getBounds();
-  const vPxW = Math.max(0,    Math.min(imgW, mb.getWest()));
-  const vPxE = Math.min(imgW, Math.max(0,   mb.getEast()));
-  const vPyN = Math.max(0,    Math.min(imgH, imgH - mb.getNorth()));
-  const vPyS = Math.min(imgH, Math.max(0,   imgH - mb.getSouth()));
-
-  // Visible corners → metres; clamp iteration to image extent
-  const visCorners = [
-    pixelToMeters(T, vPxW, vPyN), pixelToMeters(T, vPxE, vPyN),
-    pixelToMeters(T, vPxW, vPyS), pixelToMeters(T, vPxE, vPyS)
-  ].filter(Boolean);
-  if (!visCorners.length) return;
-  const vmxMin = Math.max(mxMin, Math.min(...visCorners.map(c => c.mx)));
-  const vmxMax = Math.min(mxMax, Math.max(...visCorners.map(c => c.mx)));
-  const vmyMin = Math.max(myMin, Math.min(...visCorners.map(c => c.my)));
-  const vmyMax = Math.min(myMax, Math.max(...visCorners.map(c => c.my)));
-
-  // Step: ~40 screen pixels. Cap so ≤2000 dots in visible area. stepMax prevents
-  // zero dots when zoomed out far enough that stepZoom exceeds the visible span.
-  const stepZoom = 40 / (screenPerImgPx * imgScale);
-  const visSpan  = Math.max(vmxMax - vmxMin, vmyMax - vmyMin);
-  const stepCap  = Math.sqrt((vmxMax - vmxMin) * (vmyMax - vmyMin) / 2000);
-  const stepMax  = visSpan > 0 ? visSpan / 3 : stepZoom;
-  const step = Math.min(Math.max(stepZoom, stepCap, 1e-6), stepMax);
-
-  const x0 = Math.ceil(vmxMin / step) * step;
-  const x1 = Math.floor(vmxMax / step) * step;
-  const y0 = Math.ceil(vmyMin / step) * step;
-  const y1 = Math.floor(vmyMax / step) * step;
-
-  const hull = convexHull2D(T.coords);
+  const STEP = 40; // screen pixels between dots
+  const hull  = convexHull2D(T.coords);
+  const sz    = map.getSize();
 
   const pts = [];
-  for (let mx = x0; mx <= x1 + step * 0.001; mx += step) {
-    for (let my = y0; my <= y1 + step * 0.001; my += step) {
+  for (let sx = STEP / 2; sx <= sz.x; sx += STEP) {
+    for (let sy = STEP / 2; sy <= sz.y; sy += STEP) {
+      // Screen position → image pixel
+      const ll = map.containerPointToLatLng(L.point(sx, sy));
+      const px = ll.lng, py = imgH - ll.lat;
+      if (px < 0 || px > imgW || py < 0 || py > imgH) continue;
+      // Image pixel → metre coords (via TPS affine inverse)
+      const m = pixelToMeters(T, px, py);
+      if (!m) continue;
+      const { mx, my } = m;
+      // TPS and OLS predictions at those metre coords
       const tp = applyTransformM(T, mx, my);
-      if (tp.px < 0 || tp.px > imgW || tp.py < 0 || tp.py > imgH) continue;
-      const ap = { px: T.olsCx + T.olsAx*mx + T.olsBx*my, py: T.olsCy + T.olsAy*mx + T.olsBy*my };
-      pts.push({ tp, ap, s: localScale(T, mx, my), inHull: inConvexHull(hull, mx, my) });
+      const ap = { px: T.olsCx + T.olsAx*mx + T.olsBx*my,
+                   py: T.olsCy + T.olsAy*mx + T.olsBy*my };
+      pts.push({
+        px, py,
+        dpx: tp.px - ap.px, dpy: tp.py - ap.py,
+        s: localScale(T, mx, my),
+        inHull: inConvexHull(hull, mx, my)
+      });
     }
   }
 
@@ -690,21 +656,19 @@ function drawDiag() {
   }
 
   for (const pt of pts) {
-    const tpsLL = L.latLng(imgH - pt.tp.py, pt.tp.px);
-    const c = dotColor(pt.s);
+    const dotLL = L.latLng(imgH - pt.py, pt.px);
 
-    // Displacement arrow only inside convex hull of control points
-    const dx = pt.tp.px - pt.ap.px, dy = pt.tp.py - pt.ap.py;
-    if (pt.inHull && dx*dx + dy*dy > 0.25) {
-      const affLL = L.latLng(imgH - pt.ap.py, pt.ap.px);
-      L.polyline([affLL, tpsLL], {
+    // Displacement arrow rooted at dot, only inside convex hull of control points
+    if (pt.inHull && pt.dpx*pt.dpx + pt.dpy*pt.dpy > 0.25) {
+      const tipLL = L.latLng(imgH - (pt.py + pt.dpy), pt.px + pt.dpx);
+      L.polyline([dotLL, tipLL], {
         color: 'white', weight: 1.5, opacity: 0.7, interactive: false,
         renderer: diagCanvas
       }).addTo(diagLayer);
     }
 
-    L.circleMarker(tpsLL, {
-      radius: 4, fillColor: c, fillOpacity: 1,
+    L.circleMarker(dotLL, {
+      radius: 4, fillColor: dotColor(pt.s), fillOpacity: 1,
       color: 'white', weight: 1, interactive: false,
       renderer: diagCanvas
     }).addTo(diagLayer);
