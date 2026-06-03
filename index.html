@@ -621,30 +621,49 @@ function drawDiag() {
   const imgScale = pxPerMetre(T);
   if (screenPerImgPx <= 0 || imgScale <= 0) return;
 
-  // Grid line spacing ~80 screen pixels; 8 sub-segments per cell for smooth curves
+  // Image extent in metres — needed for the step cap and range clamping.
+  const imgMPts = [pixelToMeters(T, 0, 0),    pixelToMeters(T, imgW, 0),
+                   pixelToMeters(T, 0, imgH), pixelToMeters(T, imgW, imgH)].filter(Boolean);
+  if (!imgMPts.length) return;
+  const imxMin = Math.min(...imgMPts.map(c => c.mx));
+  const imxMax = Math.max(...imgMPts.map(c => c.mx));
+  const imyMin = Math.min(...imgMPts.map(c => c.my));
+  const imyMax = Math.max(...imgMPts.map(c => c.my));
+  const imgSpanM = Math.max(imxMax - imxMin, imyMax - imyMin);
+
+  // Grid line spacing ~80 screen pixels, but never coarser than imgSpanM/5
+  // so at least ~5 lines are always visible across the image when zoomed out.
   const STEP_SCR = 80;
-  const stepM    = STEP_SCR / (screenPerImgPx * imgScale);
+  const stepM    = Math.min(STEP_SCR / (screenPerImgPx * imgScale), imgSpanM / 5);
   const subStepM = stepM / 8;
 
-  // Visible metre bounding box from current view corners
-  const sz  = map.getSize();
-  const mPts = [L.point(0,0), L.point(sz.x,0), L.point(0,sz.y), L.point(sz.x,sz.y)]
+  // Visible metre bounding box from screen corners, clamped to image extent.
+  // pixelToMeters is valid for any pixel coords (even outside the image), so
+  // the clamp is what limits iteration to the image when the view is wider.
+  const sz = map.getSize();
+  const scrMPts = [L.point(0,0), L.point(sz.x,0), L.point(0,sz.y), L.point(sz.x,sz.y)]
     .map(pt => { const ll = map.containerPointToLatLng(pt);
                  return pixelToMeters(T, ll.lng, imgH - ll.lat); })
     .filter(Boolean);
-  if (!mPts.length) return;
-  const vmxMin = Math.min(...mPts.map(c => c.mx));
-  const vmxMax = Math.max(...mPts.map(c => c.mx));
-  const vmyMin = Math.min(...mPts.map(c => c.my));
-  const vmyMax = Math.max(...mPts.map(c => c.my));
+  const vmxMin = Math.max(imxMin, scrMPts.length ? Math.min(...scrMPts.map(c => c.mx)) : imxMin);
+  const vmxMax = Math.min(imxMax, scrMPts.length ? Math.max(...scrMPts.map(c => c.mx)) : imxMax);
+  const vmyMin = Math.max(imyMin, scrMPts.length ? Math.min(...scrMPts.map(c => c.my)) : imyMin);
+  const vmyMax = Math.min(imyMax, scrMPts.length ? Math.max(...scrMPts.map(c => c.my)) : imyMax);
+  if (vmxMin >= vmxMax || vmyMin >= vmyMax) return;
 
-  // Build segments for one grid line.
-  // isH=true → horizontal line at my=lineIndex*stepM, varying mx.
+  // ±MARGIN extra lines around the visible bounds to cover approximation error
+  // in the screen-corner projection, especially at image edges.
+  const MARGIN = 2;
   const segs = [];
+
   function addLine(isH, lineIndex) {
     const lineM = lineIndex * stepM;
-    const uMin  = (isH ? vmxMin : vmyMin) - subStepM;
-    const uMax  = (isH ? vmxMax : vmyMax) + subStepM;
+    // Sample range: visible + margin, clamped to image extent
+    const uMin = Math.max(isH ? imxMin : imyMin,
+                          (isH ? vmxMin : vmyMin) - MARGIN * stepM) - subStepM;
+    const uMax = Math.min(isH ? imxMax : imyMax,
+                          (isH ? vmxMax : vmyMax) + MARGIN * stepM) + subStepM;
+    if (uMin >= uMax) return;
     let prev = null;
     for (let u = uMin; u <= uMax + subStepM * 0.001; u += subStepM) {
       const mx = isH ? u : lineM, my = isH ? lineM : u;
@@ -658,14 +677,14 @@ function drawDiag() {
     }
   }
 
-  for (let iy = Math.floor(vmyMin / stepM); iy <= Math.ceil(vmyMax / stepM); iy++)
+  for (let iy = Math.floor(vmyMin / stepM) - MARGIN; iy <= Math.ceil(vmyMax / stepM) + MARGIN; iy++)
     addLine(true, iy);
-  for (let ix = Math.floor(vmxMin / stepM); ix <= Math.ceil(vmxMax / stepM); ix++)
+  for (let ix = Math.floor(vmxMin / stepM) - MARGIN; ix <= Math.ceil(vmxMax / stepM) + MARGIN; ix++)
     addLine(false, ix);
 
   if (!segs.length) return;
 
-  const allS  = segs.map(s => s.s).filter(s => s > 0).sort((a, b) => a - b);
+  const allS   = segs.map(s => s.s).filter(s => s > 0).sort((a, b) => a - b);
   const median = allS[Math.floor(allS.length / 2)] || 1;
 
   function segColor(s) {
