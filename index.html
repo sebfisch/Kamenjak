@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="leaflet.css"/>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
+    :root { --lbar-h: 40px; }
     html, body, #map { height: 100%; width: 100%; margin: 0; padding: 0; }
     body { background: #1a5276; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; overflow: hidden; }
 
@@ -95,10 +96,9 @@
     /* ── Lambda bar ── */
     #lambda-bar {
       position: fixed; bottom: 0; left: 0; right: 0;
-      z-index: 1000; display: none;
+      z-index: 1000; display: none; height: var(--lbar-h);
       background: rgba(0,0,0,0.82); backdrop-filter: blur(4px);
-      padding: 8px 84px 8px 70px; /* right: clear FABs; left: clear zoom */
-      align-items: center; gap: 10px;
+      padding: 0 12px; align-items: center; gap: 10px;
     }
     #lambda-bar.visible { display: flex; }
     #lambda-val {
@@ -107,6 +107,15 @@
     }
     #lambda-slider { flex: 1; accent-color: #2196F3; cursor: pointer; }
     #lambda-hint { color: #888; font-size: 10px; white-space: nowrap; }
+
+    /* Shift all bottom-anchored controls up when lambda bar is visible */
+    body.lambda-on #gps-btn     { bottom: calc(24px  + var(--lbar-h)); }
+    body.lambda-on #acc-badge   { bottom: calc(90px  + var(--lbar-h)); }
+    body.lambda-on #cal-btn     { bottom: calc(124px + var(--lbar-h)); }
+    body.lambda-on #load-btn    { bottom: calc(180px + var(--lbar-h)); }
+    body.lambda-on #heatmap-btn { bottom: calc(236px + var(--lbar-h)); }
+    body.lambda-on #toast       { bottom: calc(100px + var(--lbar-h)); }
+    body.lambda-on .leaflet-bottom { margin-bottom: var(--lbar-h); }
 
     /* point-count badge */
     #cal-count {
@@ -650,7 +659,9 @@ function fitTransform() {
   updateCompass();
   drawGrid();
   drawHeatmap();
-  document.getElementById('lambda-bar').classList.toggle('visible', T !== null);
+  const hasT = T !== null;
+  document.getElementById('lambda-bar').classList.toggle('visible', hasT);
+  document.body.classList.toggle('lambda-on', hasT);
 }
 
 // North direction in pixel space is the my-column of J: (T.bx, T.by) —
