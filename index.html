@@ -621,49 +621,33 @@ function drawDiag() {
   const imgScale = pxPerMetre(T);
   if (screenPerImgPx <= 0 || imgScale <= 0) return;
 
-  // Image extent in metres — needed for the step cap and range clamping.
-  const imgMPts = [pixelToMeters(T, 0, 0),    pixelToMeters(T, imgW, 0),
-                   pixelToMeters(T, 0, imgH), pixelToMeters(T, imgW, imgH)].filter(Boolean);
+  // Image extent in metres — the only bounds we need.
+  const imgMPts = [pixelToMeters(T, 0, 0),     pixelToMeters(T, imgW, 0),
+                   pixelToMeters(T, 0, imgH),  pixelToMeters(T, imgW, imgH)].filter(Boolean);
   if (!imgMPts.length) return;
   const imxMin = Math.min(...imgMPts.map(c => c.mx));
   const imxMax = Math.max(...imgMPts.map(c => c.mx));
   const imyMin = Math.min(...imgMPts.map(c => c.my));
   const imyMax = Math.max(...imgMPts.map(c => c.my));
   const imgSpanM = Math.max(imxMax - imxMin, imyMax - imyMin);
+  if (imgSpanM <= 0) return;
 
-  // Grid line spacing ~80 screen pixels, but never coarser than imgSpanM/5
-  // so at least ~5 lines are always visible across the image when zoomed out.
-  const STEP_SCR = 80;
-  const stepM    = Math.min(STEP_SCR / (screenPerImgPx * imgScale), imgSpanM / 5);
-  const subStepM = stepM / 8;
+  // Target ~80 screen pixels between lines. Clamped to [imgSpanM/30, imgSpanM/5]
+  // so there are always 5–30 lines regardless of zoom level.
+  const stepZoom = 80 / (screenPerImgPx * imgScale);
+  const stepM    = Math.max(imgSpanM / 30, Math.min(imgSpanM / 5, stepZoom));
+  const subStepM = stepM / 8; // 8 sub-segments per cell for smooth TPS curves
 
-  // Visible metre bounding box from screen corners, clamped to image extent.
-  // pixelToMeters is valid for any pixel coords (even outside the image), so
-  // the clamp is what limits iteration to the image when the view is wider.
-  const sz = map.getSize();
-  const scrMPts = [L.point(0,0), L.point(sz.x,0), L.point(0,sz.y), L.point(sz.x,sz.y)]
-    .map(pt => { const ll = map.containerPointToLatLng(pt);
-                 return pixelToMeters(T, ll.lng, imgH - ll.lat); })
-    .filter(Boolean);
-  const vmxMin = Math.max(imxMin, scrMPts.length ? Math.min(...scrMPts.map(c => c.mx)) : imxMin);
-  const vmxMax = Math.min(imxMax, scrMPts.length ? Math.max(...scrMPts.map(c => c.mx)) : imxMax);
-  const vmyMin = Math.max(imyMin, scrMPts.length ? Math.min(...scrMPts.map(c => c.my)) : imyMin);
-  const vmyMax = Math.min(imyMax, scrMPts.length ? Math.max(...scrMPts.map(c => c.my)) : imyMax);
-  if (vmxMin >= vmxMax || vmyMin >= vmyMax) return;
-
-  // ±MARGIN extra lines around the visible bounds to cover approximation error
-  // in the screen-corner projection, especially at image edges.
-  const MARGIN = 2;
+  // Iterate over ALL lines that could intersect the image — no view-bounds clipping.
+  // This eliminates gaps at corners and the "no grid at low zoom" case: the ok-check
+  // inside addLine filters out image-exterior points, so off-screen lines cost only
+  // a few extra iterations with all ok=false.
   const segs = [];
 
   function addLine(isH, lineIndex) {
     const lineM = lineIndex * stepM;
-    // Sample range: visible + margin, clamped to image extent
-    const uMin = Math.max(isH ? imxMin : imyMin,
-                          (isH ? vmxMin : vmyMin) - MARGIN * stepM) - subStepM;
-    const uMax = Math.min(isH ? imxMax : imyMax,
-                          (isH ? vmxMax : vmyMax) + MARGIN * stepM) + subStepM;
-    if (uMin >= uMax) return;
+    const uMin  = (isH ? imxMin : imyMin) - subStepM;
+    const uMax  = (isH ? imxMax : imyMax) + subStepM;
     let prev = null;
     for (let u = uMin; u <= uMax + subStepM * 0.001; u += subStepM) {
       const mx = isH ? u : lineM, my = isH ? lineM : u;
@@ -677,9 +661,9 @@ function drawDiag() {
     }
   }
 
-  for (let iy = Math.floor(vmyMin / stepM) - MARGIN; iy <= Math.ceil(vmyMax / stepM) + MARGIN; iy++)
-    addLine(true, iy);
-  for (let ix = Math.floor(vmxMin / stepM) - MARGIN; ix <= Math.ceil(vmxMax / stepM) + MARGIN; ix++)
+  for (let iy = Math.floor(imyMin / stepM); iy <= Math.ceil(imyMax / stepM); iy++)
+    addLine(true,  iy);
+  for (let ix = Math.floor(imxMin / stepM); ix <= Math.ceil(imxMax / stepM); ix++)
     addLine(false, ix);
 
   if (!segs.length) return;
