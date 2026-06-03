@@ -376,7 +376,7 @@ function fitFromPoints(pts) {
   let suv2=0, su=0, sv=0, suxvy=0, svxuy=0, sx=0, sy=0;
   for (const p of pts) {
     const { u, v } = geoToMeters(p.raw, lat0, lng0);
-    const x = p.px, y = p.py;
+    const x = p.px, y = imgH - p.py;
     suv2 += u*u + v*v; su += u; sv += v;
     suxvy += u*x + v*y; svxuy += -v*x + u*y;
     sx += x; sy += y;
@@ -412,7 +412,9 @@ function fitFromPoints(pts) {
 function applyTransform(t, raw) {
   if (!t) return null;
   const { u, v } = geoToMeters(raw, t.lat0, t.lng0);
-  return { px: t.a*u - t.b*v + t.tx, py: t.b*u + t.a*v + t.ty };
+  const X = t.a*u - t.b*v + t.tx;
+  const Y = t.b*u + t.a*v + t.ty;
+  return { px: X, py: imgH - Y };
 }
 
 // Pixels per metre = uniform scale s = √(a²+b²)
@@ -440,13 +442,13 @@ function fitTransform() {
   updateCompass();
 }
 
-// North in meters space = (0,1); similarity maps it to pixel direction (-b, a).
-// In screen space (py flipped) that is (-b, -a); atan2(-b,-a) rotates the needle.
+// North in meters space = (0,1); similarity (y-up frame) maps it to (-b, a).
+// In screen space that direction is already correct: atan2(-b, a) rotates the needle.
 function updateCompass() {
   const el = document.getElementById('compass');
   const s = T ? Math.sqrt(T.a*T.a + T.b*T.b) : 0;
   if (s < 1e-10) { el.classList.remove('visible'); return; }
-  const angle = Math.atan2(-T.b, -T.a) * 180 / Math.PI;
+  const angle = Math.atan2(-T.b, T.a) * 180 / Math.PI;
   document.getElementById('compass-needle').setAttribute('transform', `rotate(${angle})`);
   el.classList.add('visible');
 }
