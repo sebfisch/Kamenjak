@@ -459,11 +459,21 @@ async function switchToMap(id) {
 }
 
 // Look up (by content) or create a map record for an imported blob; returns its id.
-async function createOrGetMap(blob, name) {
-  let id = await hashBlob(blob);
-  if (!id) id = 'f' + (name || 'map') + ':' + blob.size;  // fallback identity
+async function createOrGetMap(blob, name, idBlob = blob) {
+  // Identity is computed from idBlob (the original file), which may differ from the
+  // stored blob: PDFs are stored as a re-rendered JPEG whose bytes are not stable, so
+  // hashing the rendered output would defeat dedup. Defaults to blob for image imports.
+  let id = await hashBlob(idBlob);
+  if (!id) id = 'f' + (name || 'map') + ':' + idBlob.size;  // fallback identity
   const existing = await metaGet(id);
-  if (existing) return id;
+  if (existing) {
+    // Re-import of a known map: refresh its name to match the new filename.
+    if (name && !existing.isDefault && existing.name !== name) {
+      existing.name = name;
+      await metaPut(existing).catch(() => {});
+    }
+    return id;
+  }
   await mapsPut(id, blob);   // blob first — abort import if storage is full
   await metaPut({
     id, name: name || 'Map', isDefault: false, size: blob.size,
@@ -1087,7 +1097,8 @@ document.getElementById('map-file').addEventListener('change', async (e) => {
 
     let id;
     try {
-      id = await createOrGetMap(blob, file.name);   // dedup-aware; restores known maps
+      // Hash identity off the original file (stable) — not the rendered PDF blob.
+      id = await createOrGetMap(blob, file.name, file);   // dedup-aware; restores known maps
     } catch (err) {
       toast('Storage full — could not save this map', 5000);
       return;
