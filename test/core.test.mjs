@@ -45,6 +45,8 @@ describe('fresh install', () => {
     assert.ok(state, '__state record should exist');
     assert.equal(state.currentId, 'default');
   });
+
+  test('no JS errors', () => { assert.deepEqual(h.errors, []); });
 });
 
 // ── Maps panel ────────────────────────────────────────────────────────────────
@@ -70,6 +72,8 @@ describe('maps panel', () => {
     await h.page.waitForFunction(() => !document.getElementById('maps-ui').classList.contains('active'));
     assert.ok(!(await h.page.isVisible('#maps-ui')));
   });
+
+  test('no JS errors', () => { assert.deepEqual(h.errors, []); });
 });
 
 // ── Calibration persistence ───────────────────────────────────────────────────
@@ -105,6 +109,8 @@ describe('calibration persistence', () => {
     const badge = await h.page.textContent('#cal-count');
     assert.equal(badge.trim(), '2');
   });
+
+  test('no JS errors', () => { assert.deepEqual(h.errors, []); });
 });
 
 // ── Per-map isolation ─────────────────────────────────────────────────────────
@@ -141,6 +147,8 @@ describe('per-map isolation', () => {
     const pts = await h.page.evaluate(() => calPoints.length);
     assert.equal(pts, 3);
   });
+
+  test('no JS errors', () => { assert.deepEqual(h.errors, []); });
 });
 
 // ── Dedup ─────────────────────────────────────────────────────────────────────
@@ -166,6 +174,8 @@ describe('dedup on re-import', () => {
     const maps = metas.filter(m => m.id);
     assert.equal(maps.length, 2);
   });
+
+  test('no JS errors', () => { assert.deepEqual(h.errors, []); });
 });
 
 // ── Delete ────────────────────────────────────────────────────────────────────
@@ -209,4 +219,124 @@ describe('delete', () => {
     const after  = (await h.page.evaluate(idbGetAll)).filter(m => m.id).length;
     assert.equal(after, before);
   });
+});
+
+// ── Calibration badge CSS state ───────────────────────────────────────────────
+
+describe('calibration badge state', () => {
+  let h;
+  before(async () => { h = await freshPage(); });
+  after(async () => { await h.ctx.close(); });
+
+  test('0 points: badge class is empty (hidden)', async () => {
+    const cls = await h.page.evaluate(() => {
+      calPoints = [];
+      updateBadge();
+      return document.getElementById('cal-count').className;
+    });
+    assert.equal(cls, '');
+  });
+
+  test('1 point: badge has class "one" (orange)', async () => {
+    const cls = await h.page.evaluate(() => {
+      calPoints = [{ raw: { lat: 44, lng: 13.9 }, px: 100, py: 100, accuracy: 5, timestamp: 1 }];
+      updateBadge();
+      return document.getElementById('cal-count').className;
+    });
+    assert.equal(cls, 'one');
+  });
+
+  test('2+ points: badge has class "many" (green)', async () => {
+    const cls = await h.page.evaluate(() => {
+      calPoints = [
+        { raw: { lat: 44,     lng: 13.9   }, px: 100, py: 100, accuracy: 5, timestamp: 1 },
+        { raw: { lat: 44.001, lng: 13.901 }, px: 200, py: 200, accuracy: 5, timestamp: 2 },
+      ];
+      updateBadge();
+      return document.getElementById('cal-count').className;
+    });
+    assert.equal(cls, 'many');
+  });
+
+  test('no JS errors', () => { assert.deepEqual(h.errors, []); });
+});
+
+// ── Compass visibility ────────────────────────────────────────────────────────
+
+describe('compass visibility', () => {
+  let h;
+  before(async () => { h = await freshPage(); });
+  after(async () => { await h.ctx.close(); });
+
+  test('compass is not visible on fresh page (no calibration)', async () => {
+    const visible = await h.page.evaluate(() =>
+      document.getElementById('compass').classList.contains('visible')
+    );
+    assert.ok(!visible);
+  });
+
+  test('compass becomes visible after ≥2 calibration points are fit', async () => {
+    const visible = await h.page.evaluate(() => {
+      window.imgH = 1000;
+      calPoints = [
+        { raw: { lat: 44,     lng: 13.9   }, px: 100, py: 200, accuracy: 5, timestamp: 1 },
+        { raw: { lat: 44.001, lng: 13.901 }, px: 300, py: 400, accuracy: 5, timestamp: 2 },
+      ];
+      fitTransform();
+      return document.getElementById('compass').classList.contains('visible');
+    });
+    assert.ok(visible);
+  });
+
+  test('no JS errors', () => { assert.deepEqual(h.errors, []); });
+});
+
+// ── Active map row highlight ──────────────────────────────────────────────────
+
+describe('active map row highlight', () => {
+  let h;
+  before(async () => { h = await freshPage(); });
+  after(async () => { await h.ctx.close(); });
+
+  test('current map row has .active class in maps panel', async () => {
+    await h.page.click('#load-btn');
+    await h.page.waitForSelector('.map-row');
+    const activeCount = await h.page.locator('.map-row.active').count();
+    assert.equal(activeCount, 1);
+    await h.page.click('#maps-close');
+  });
+
+  test('no JS errors', () => { assert.deepEqual(h.errors, []); });
+});
+
+// ── Delete active map falls back to default ───────────────────────────────────
+
+describe('delete active map falls back to default', () => {
+  let h;
+  before(async () => {
+    h = await freshPage();
+    // Create map A and make it the active map.
+    await h.page.evaluate(async () => {
+      const idA = await createOrGetMap(new Blob(['FALLBACK-A'], { type: 'image/png' }), 'fallback.png');
+      await activateMap(idA);
+      window._fallbackId = idA;
+    });
+  });
+  after(async () => { await h.ctx.close(); });
+
+  test('deleting the active map switches currentMapId to "default"', async () => {
+    await h.page.evaluate(() => deleteMap(window._fallbackId));
+    await h.page.waitForTimeout(300);
+    const id = await h.page.evaluate(() => currentMapId);
+    assert.equal(id, 'default');
+  });
+
+  test('__state.currentId is "default" in IDB after fallback', async () => {
+    const metas = await h.page.evaluate(idbGetAll);
+    const state = metas.find(m => m.key === '__state');
+    assert.ok(state, '__state record should exist');
+    assert.equal(state.currentId, 'default');
+  });
+
+  test('no JS errors', () => { assert.deepEqual(h.errors, []); });
 });
