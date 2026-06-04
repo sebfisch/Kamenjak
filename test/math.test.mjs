@@ -157,3 +157,52 @@ describe('rmseMetres', () => {
     assert.ok(rmse >= 0 && rmse < 0.01, `RMSE should be near 0, got ${rmse}`);
   });
 });
+
+// ── niceScaleMetres ───────────────────────────────────────────────────────────
+
+describe('niceScaleMetres', () => {
+  let h;
+  before(async () => { h = await freshPage(); });
+  after(async () => { await h.ctx.close(); });
+
+  test('picks the largest 1/2/5 ×10ⁿ value not exceeding the max', async () => {
+    const cases = [
+      [130, 100], [80, 50], [12, 10], [9, 5], [1.5, 1], [0.8, 0.5],
+      [100, 100], [50, 50], [1000, 1000],
+    ];
+    for (const [max, want] of cases) {
+      const got = await h.page.evaluate(m => niceScaleMetres(m), max);
+      assert.ok(Math.abs(got - want) < 1e-9, `niceScaleMetres(${max}) → ${got}, want ${want}`);
+    }
+  });
+
+  test('result never exceeds the input', async () => {
+    for (const max of [1, 3, 7, 23, 99, 4567]) {
+      const got = await h.page.evaluate(m => niceScaleMetres(m), max);
+      assert.ok(got <= max, `niceScaleMetres(${max}) = ${got} should be ≤ ${max}`);
+    }
+  });
+
+  test('returns 0 for non-positive or non-finite input', async () => {
+    for (const bad of [0, -5, Infinity, NaN]) {
+      const got = await h.page.evaluate(m => niceScaleMetres(m), bad);
+      assert.equal(got, 0, `niceScaleMetres(${bad}) should be 0, got ${got}`);
+    }
+  });
+});
+
+// ── formatScale ───────────────────────────────────────────────────────────────
+
+describe('formatScale', () => {
+  let h;
+  before(async () => { h = await freshPage(); });
+  after(async () => { await h.ctx.close(); });
+
+  test('renders metres below 1000 and kilometres at/above 1000', async () => {
+    const cases = [[500, '500 m'], [1000, '1 km'], [2000, '2 km'], [5000, '5 km']];
+    for (const [m, want] of cases) {
+      const got = await h.page.evaluate(x => formatScale(x), m);
+      assert.equal(got, want, `formatScale(${m}) → "${got}", want "${want}"`);
+    }
+  });
+});

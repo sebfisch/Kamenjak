@@ -73,6 +73,19 @@
     }
     #compass.visible { opacity: 1; }
 
+    /* ── Scale bar ── */
+    #scale-bar {
+      position: fixed; top: 12px; left: 12px; z-index: 1000;
+      background: rgba(255,255,255,0.92); border-radius: 6px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+      padding: 6px 8px; box-sizing: border-box;
+      font: 12px/1.2 system-ui, sans-serif; color: #333;
+      pointer-events: none; opacity: 0; transition: opacity 0.3s;
+    }
+    #scale-bar.visible { opacity: 1; }
+    #scale-label { text-align: center; margin-bottom: 3px; font-weight: 600; }
+    #scale-track { height: 8px; border: 2px solid #555; border-top: none; }
+
     #cal-btn {
       bottom: 124px; width: 44px; height: 44px;
       background: white; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
@@ -248,6 +261,12 @@
       <circle r="0.08" fill="#555"/>
     </g>
   </svg>
+</div>
+
+<!-- Scale bar: a round distance (1/2/5 ×10ⁿ m or km) drawn to scale. Visible once calibrated. -->
+<div id="scale-bar">
+  <div id="scale-label"></div>
+  <div id="scale-track"></div>
 </div>
 
 <div id="acc-badge"></div>
@@ -602,6 +621,7 @@ let T = null;
 function fitTransform() {
   T = fitFromPoints(calPoints);
   updateCompass();
+  updateScale();
 }
 
 // North in meters space = (0,1); similarity (y-up frame) maps it to (-b, a).
@@ -612,6 +632,45 @@ function updateCompass() {
   if (s < 1e-10) { el.classList.remove('visible'); return; }
   const angle = Math.atan2(-T.b, T.a) * 180 / Math.PI;
   document.getElementById('compass-needle').setAttribute('transform', `rotate(${angle})`);
+  el.classList.add('visible');
+}
+
+// ── Scale bar ─────────────────────────────────────────────────────────────────
+// Picks a round distance (1, 2, or 5 ×10ⁿ metres) that fits within a fixed
+// on-screen budget, draws a bar of that exact width, and labels it. Adapts to
+// both calibration (px/m) and Leaflet zoom (px/image-px).
+const SCALE_MAX_PX = 110;  // upper bound for the bar's on-screen width
+
+// Largest "nice" distance (1, 2, or 5 ×10ⁿ) not exceeding max metres.
+function niceScaleMetres(max) {
+  if (!(max > 0) || !isFinite(max)) return 0;
+  const pow = Math.pow(10, Math.floor(Math.log10(max)));
+  for (const m of [5, 2, 1]) if (m * pow <= max) return m * pow;
+  return pow / 2;
+}
+
+function formatScale(m) {
+  return m >= 1000 ? `${m / 1000} km` : `${m} m`;
+}
+
+// Screen pixels per metre = (image-px per metre) × (screen-px per image-px).
+function screenPxPerMetre() {
+  const ppm = pxPerMetre(T);
+  if (ppm < 1e-10 || !imgH) return 0;
+  // map.project is unrounded (unlike latLngToContainerPoint); the pan offset
+  // cancels in the difference, leaving screen-px per image-px at this zoom.
+  const p0 = map.project(L.latLng(0, 0));
+  const p1 = map.project(L.latLng(0, 1)); // 1 image px east
+  return ppm * Math.abs(p1.x - p0.x);
+}
+
+function updateScale() {
+  const el = document.getElementById('scale-bar');
+  const sppm = screenPxPerMetre();
+  const metres = niceScaleMetres(SCALE_MAX_PX / sppm);
+  if (sppm <= 0 || metres <= 0) { el.classList.remove('visible'); return; }
+  document.getElementById('scale-track').style.width = (metres * sppm) + 'px';
+  document.getElementById('scale-label').textContent = formatScale(metres);
   el.classList.add('visible');
 }
 
@@ -801,6 +860,9 @@ map.on('locationerror', (e) => {
 });
 
 map.on('dragstart', () => { followMode = false; });
+
+// Re-scale the scale bar on zoom (continuous + settle) and whenever a new view is set.
+map.on('zoom zoomend viewreset', updateScale);
 
 document.getElementById('gps-btn').addEventListener('click', () => {
   if (!tracking) {
