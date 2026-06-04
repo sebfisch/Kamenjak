@@ -70,6 +70,32 @@ tap again to confirm (the bundled default cannot be removed).
   (kept in `localStorage`) is migrated automatically on first launch.
 - No build step — the entire app is a single `index.html`.
 
+## Running the tests
+
+The tests use [Playwright](https://playwright.dev/) for headless-browser automation
+and Node's built-in test runner (`node:test`). Node 22 is required.
+
+Install test dependencies once, then install the Chromium browser Playwright needs:
+
+```sh
+npm install
+npx playwright install chromium
+```
+
+Run the suite:
+
+```sh
+npm test
+```
+
+The tests spin up a local HTTP server, launch a headless Chromium browser, and
+exercise the app end-to-end across two test files:
+
+- `test/core.test.mjs` — fresh install, Maps panel UI, per-map calibration
+  persistence, map switching, dedup on re-import, and delete
+- `test/migration.test.mjs` — one-time, idempotent migration from the legacy
+  single-map + `localStorage` model to the current per-map IndexedDB model
+
 ---
 
 > **About the name:** *Kamenjak* is the name of a nature reserve on the Istrian
