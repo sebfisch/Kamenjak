@@ -56,7 +56,7 @@ describe('maps panel', () => {
 
   test('FAB opens the maps panel', async () => {
     await h.page.click('#load-btn');
-    await h.page.waitForSelector('#maps-ui.active');
+    await h.page.waitForSelector('.map-row');   // rows render async after .active
     assert.ok(await h.page.isVisible('#maps-ui'));
   });
 
@@ -195,7 +195,7 @@ describe('delete', () => {
 
   test('maps panel row count decrements after delete', async () => {
     await h.page.click('#load-btn');
-    await h.page.waitForSelector('#maps-ui.active');
+    await h.page.waitForSelector('.map-row');   // rows render async after .active
     const count = await h.page.locator('.map-row').count();
     // default + A (B was deleted) = 2
     assert.equal(count, 2);
