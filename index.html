@@ -196,6 +196,39 @@
     }
     #cal-pt-bar { display: flex; gap: 10px; padding: 8px 16px 16px; }
     #cal-pt-delete { background: rgba(255,80,80,0.35); color: #ff8080; }
+
+    /* ── Maps panel (switch between saved maps) ── */
+    #maps-ui {
+      display: none; position: fixed; bottom: 0; left: 0; right: 0;
+      z-index: 1300; background: rgba(0,0,0,0.92);
+    }
+    #maps-ui.active { display: block; }
+    #maps-header {
+      padding: 14px 20px 8px; color: white; font-size: 16px; font-weight: 600;
+      text-align: center;
+    }
+    #maps-list { max-height: 50vh; overflow-y: auto; padding: 0 12px; }
+    .map-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 10px; border-radius: 10px; margin-bottom: 6px;
+      background: rgba(255,255,255,0.06);
+    }
+    .map-row.active { background: rgba(33,150,243,0.22); box-shadow: inset 3px 0 0 #2196F3; }
+    .map-info { flex: 1; min-width: 0; cursor: pointer; }
+    .map-name {
+      color: white; font-size: 15px; font-weight: 600;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .map-sub { color: #aaa; font-size: 12px; margin-top: 2px; }
+    .map-del {
+      flex: 0 0 auto; min-width: 36px; height: 36px; padding: 0 10px;
+      border: none; border-radius: 8px; cursor: pointer; touch-action: manipulation;
+      background: rgba(255,80,80,0.22); color: #ff8080; font-size: 16px; font-weight: 600;
+    }
+    .map-del.confirm { background: rgba(255,80,80,0.5); color: white; font-size: 13px; }
+    #maps-bar { display: flex; gap: 10px; padding: 10px 16px 16px; }
+    #maps-add   { background: #2196F3; color: white; }
+    #maps-close { background: rgba(255,255,255,0.15); color: white; }
   </style>
 </head>
 <body>
@@ -227,7 +260,7 @@
     0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></svg>
 </button>
 
-<button id="load-btn" class="fab" title="Load map file">
+<button id="load-btn" class="fab" title="Maps">
   <svg viewBox="0 0 24 24"><path d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1
     0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-2 8h-3v3h-2v-3h-3l4-4 4 4z"/></svg>
 </button>
@@ -264,6 +297,15 @@
   </div>
 </div>
 
+<div id="maps-ui">
+  <div id="maps-header">Maps</div>
+  <div id="maps-list"></div>
+  <div id="maps-bar">
+    <button class="cal-action" id="maps-add">Load new map</button>
+    <button class="cal-action" id="maps-close">Close</button>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script src="leaflet.js"></script>
@@ -284,37 +326,56 @@ map.zoomControl.setPosition('bottomleft');
 
 function hideLoader() { document.getElementById('loader').classList.add('gone'); }
 
-// ── IndexedDB helpers (store map blob across sessions) ────────────────────────
+// ── IndexedDB helpers ─────────────────────────────────────────────────────────
+//   Store 'maps': image Blob per map, keyed by map id (default map has no blob).
+//   Store 'meta': one record per map { id, name, isDefault, size, createdAt,
+//                 lastUsed, calPoints[] }, plus a singleton { key:'__state', currentId }.
+const DEFAULT_MAP_ID = 'default';
+
 function openDB() {
   return new Promise((res, rej) => {
-    const req = indexedDB.open('kamenjak-db', 1);
-    req.onupgradeneeded = e => e.target.result.createObjectStore('maps');
+    const req = indexedDB.open('kamenjak-db', 2);
+    req.onupgradeneeded = e => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('maps')) db.createObjectStore('maps');
+      if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta');
+    };
     req.onsuccess = e => res(e.target.result);
     req.onerror   = e => rej(e.target.error);
   });
 }
-async function saveMapIDB(blob) {
-  const db = await openDB();
-  return new Promise((res, rej) => {
-    const tx = db.transaction('maps', 'readwrite');
-    tx.objectStore('maps').put(blob, 'current');
-    tx.oncomplete = res;
-    tx.onerror = e => rej(e.target.error);
-  });
+function idbReq(store, mode, fn) {
+  return openDB().then(db => new Promise((res, rej) => {
+    const tx  = db.transaction(store, mode);
+    const req = fn(tx.objectStore(store));
+    tx.oncomplete = () => res(req ? req.result : undefined);
+    tx.onerror    = e => rej(e.target.error);
+    tx.onabort    = e => rej(tx.error || (e.target && e.target.error));
+  }));
 }
-async function loadMapIDB() {
-  const db = await openDB();
-  return new Promise((res, rej) => {
-    const tx  = db.transaction('maps', 'readonly');
-    const req = tx.objectStore('maps').get('current');
-    req.onsuccess = () => res(req.result || null);
-    req.onerror   = e => rej(e.target.error);
-  });
+const mapsGet    = id       => idbReq('maps', 'readonly',  s => s.get(id));
+const mapsPut    = (id, b)  => idbReq('maps', 'readwrite', s => s.put(b, id));
+const mapsDelete = id       => idbReq('maps', 'readwrite', s => s.delete(id));
+const metaGet    = key      => idbReq('meta', 'readonly',  s => s.get(key));
+const metaGetAll = ()       => idbReq('meta', 'readonly',  s => s.getAll());
+const metaPut    = rec      => idbReq('meta', 'readwrite', s => s.put(rec, rec.id || rec.key));
+const metaDelete = key      => idbReq('meta', 'readwrite', s => s.delete(key));
+
+// Content-hash a blob for stable map identity (dedup across re-imports).
+async function hashBlob(blob) {
+  try {
+    const buf = await blob.arrayBuffer();
+    const digest = await crypto.subtle.digest('SHA-256', buf);
+    return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+  } catch (_) {
+    return null;  // caller falls back to name+size identity
+  }
 }
 
 // ── Map image loading ─────────────────────────────────────────────────────────
 let currentOverlay = null;
 let currentBlobUrl = null;
+let currentMapId   = null;   // id of the map currently displayed
 
 function loadMapSource(src) {
   const img = new Image();
@@ -337,15 +398,117 @@ function loadMapSource(src) {
   img.src = src;
 }
 
-// Try IDB first; fall back to the bundled map.jpg
+// ── Map records & switching ───────────────────────────────────────────────────
+// Make a map the active one: restore its calibration and show its image.
+async function activateMap(id) {
+  const rec = await metaGet(id);
+  if (!rec) return;
+  currentMapId = id;
+  calPoints = Array.isArray(rec.calPoints) ? rec.calPoints : [];
+
+  let src;
+  if (rec.isDefault) {
+    src = 'map.jpg';
+    if (currentBlobUrl) { URL.revokeObjectURL(currentBlobUrl); currentBlobUrl = null; }
+  } else {
+    const blob = await mapsGet(id);
+    if (!blob) { await ensureDefaultRecord(); return activateMap(DEFAULT_MAP_ID); }
+    if (currentBlobUrl) { URL.revokeObjectURL(currentBlobUrl); currentBlobUrl = null; }
+    currentBlobUrl = URL.createObjectURL(blob);
+    src = currentBlobUrl;
+  }
+
+  rec.lastUsed = Date.now();
+  metaPut(rec).catch(() => {});
+  metaPut({ key: '__state', currentId: id }).catch(() => {});
+
+  updateBadge();
+  loadMapSource(src);   // runs fitTransform() + refreshMarker() once the image loads
+}
+
+// Switch from the UI: flush the outgoing map's points, then activate the target.
+async function switchToMap(id) {
+  if (id === currentMapId) { closeMapsUI(); return; }
+  closeCalUI();
+  savePoints();
+  await activateMap(id);
+  closeMapsUI();
+  const rec = await metaGet(id);
+  toast(rec && rec.calPoints && rec.calPoints.length >= 2
+    ? 'Map switched — calibration restored'
+    : 'Map switched');
+}
+
+// Look up (by content) or create a map record for an imported blob; returns its id.
+async function createOrGetMap(blob, name) {
+  let id = await hashBlob(blob);
+  if (!id) id = 'f' + (name || 'map') + ':' + blob.size;  // fallback identity
+  const existing = await metaGet(id);
+  if (existing) return id;
+  await mapsPut(id, blob);   // blob first — abort import if storage is full
+  await metaPut({
+    id, name: name || 'Map', isDefault: false, size: blob.size,
+    createdAt: Date.now(), lastUsed: Date.now(), calPoints: []
+  });
+  return id;
+}
+
+async function deleteMap(id) {
+  const rec = await metaGet(id);
+  if (!rec || rec.isDefault) return;
+  await metaDelete(id).catch(() => {});
+  await mapsDelete(id).catch(() => {});
+  if (id === currentMapId) await activateMap(DEFAULT_MAP_ID);
+}
+
+// Ensure the bundled default map has a meta record (optionally seeding calibration).
+async function ensureDefaultRecord(seedPoints) {
+  const existing = await metaGet(DEFAULT_MAP_ID);
+  if (existing) return existing;
+  const rec = {
+    id: DEFAULT_MAP_ID, name: 'Kamenjak (bundled)', isDefault: true, size: null,
+    createdAt: Date.now(), lastUsed: Date.now(),
+    calPoints: Array.isArray(seedPoints) ? seedPoints : []
+  };
+  await metaPut(rec);
+  return rec;
+}
+
+// One-time migration from the legacy single-map model (idempotent).
+async function migrateIfNeeded() {
+  const state = await metaGet('__state').catch(() => null);
+  if (state && state.currentId) return;   // already on the per-map model
+
+  let legacyBlob = null, legacyPts = [];
+  try { legacyBlob = await mapsGet('current'); } catch (_) {}
+  try { const s = localStorage.getItem('kmap-pts2'); if (s) legacyPts = JSON.parse(s) || []; } catch (_) {}
+
+  await ensureDefaultRecord(legacyBlob ? [] : legacyPts);
+
+  if (legacyBlob) {
+    let id = await hashBlob(legacyBlob);
+    if (!id) id = 'legacy-current';
+    await mapsPut(id, legacyBlob);
+    await mapsDelete('current').catch(() => {});
+    await metaPut({
+      id, name: 'Imported map', isDefault: false, size: legacyBlob.size,
+      createdAt: Date.now(), lastUsed: Date.now(), calPoints: legacyPts
+    });
+    await metaPut({ key: '__state', currentId: id });
+  } else {
+    await metaPut({ key: '__state', currentId: DEFAULT_MAP_ID });
+  }
+}
+
+// Startup: migrate if needed, then show the last-active map.
 setTimeout(hideLoader, 12000);
 (async () => {
-  const blob = await loadMapIDB().catch(() => null);
-  if (blob) {
-    currentBlobUrl = URL.createObjectURL(blob);
-    loadMapSource(currentBlobUrl);
-  } else {
-    loadMapSource('map.jpg');
+  try {
+    await migrateIfNeeded();
+    const state = await metaGet('__state');
+    await activateMap(state && state.currentId ? state.currentId : DEFAULT_MAP_ID);
+  } catch (_) {
+    loadMapSource('map.jpg');   // last-resort fallback if IDB is unavailable
   }
 })();
 
@@ -356,8 +519,7 @@ setTimeout(hideLoader, 12000);
 //   f(g) = [[a,-b],[b,a]]·meters(g) + [tx,ty],  a=s·cosθ, b=s·sinθ
 // Requires ≥ 2 non-coincident points; returns null otherwise.
 
-let calPoints = [];
-try { const s = localStorage.getItem('kmap-pts2'); if (s) calPoints = JSON.parse(s); } catch (_) {}
+let calPoints = [];   // working copy of the active map's points; loaded via activateMap()
 
 const GEO_R = 6371000;
 
@@ -461,8 +623,14 @@ function toDisplay(raw) {
 }
 
 
+// Persist the active map's calibration into its meta record (auto-save, fire-and-forget).
 function savePoints() {
-  try { localStorage.setItem('kmap-pts2', JSON.stringify(calPoints)); } catch (_) {}
+  if (currentMapId == null) return;
+  metaGet(currentMapId).then(rec => {
+    if (!rec) return;
+    rec.calPoints = calPoints;
+    return metaPut(rec);
+  }).catch(() => {});
 }
 
 function updateBadge() {
@@ -735,10 +903,79 @@ document.getElementById('cal-reset').addEventListener('click', () => {
   toast('All calibration points cleared.');
 });
 
-// ── Load Map button ───────────────────────────────────────────────────────────
-document.getElementById('load-btn').addEventListener('click', () => {
+// ── Maps panel (switch between saved maps; import new ones) ──────────────────
+document.getElementById('load-btn').addEventListener('click', openMapsUI);
+document.getElementById('maps-close').addEventListener('click', closeMapsUI);
+document.getElementById('maps-add').addEventListener('click', () => {
   document.getElementById('map-file').click();
 });
+
+let mapsPendingDelete = null;   // id awaiting a second delete tap
+
+function openMapsUI() {
+  closeCalUI();
+  mapsPendingDelete = null;
+  renderMapsList();
+  document.getElementById('maps-ui').classList.add('active');
+}
+function closeMapsUI() {
+  document.getElementById('maps-ui').classList.remove('active');
+  mapsPendingDelete = null;
+}
+
+function fmtDate(ts) {
+  if (!ts) return '';
+  try { return new Date(ts).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }); }
+  catch (_) { return ''; }
+}
+
+async function renderMapsList() {
+  const list = document.getElementById('maps-list');
+  list.innerHTML = '';
+  let recs = (await metaGetAll().catch(() => [])) || [];
+  recs = recs.filter(r => r && r.id);                       // drop the __state singleton
+  recs.sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
+
+  for (const rec of recs) {
+    const n = (rec.calPoints || []).length;
+    const row = document.createElement('div');
+    row.className = 'map-row' + (rec.id === currentMapId ? ' active' : '');
+
+    const info = document.createElement('div');
+    info.className = 'map-info';
+    const dot = n >= 2 ? '🟢' : n >= 1 ? '🟠' : '⚪';
+    info.innerHTML =
+      `<div class="map-name">${escapeHtml(rec.name || 'Map')}</div>` +
+      `<div class="map-sub">${dot} ${n} point${n === 1 ? '' : 's'} · ${fmtDate(rec.lastUsed)}</div>`;
+    info.addEventListener('click', () => switchToMap(rec.id));
+    row.appendChild(info);
+
+    if (!rec.isDefault) {
+      const del = document.createElement('button');
+      del.className = 'map-del';
+      del.textContent = mapsPendingDelete === rec.id ? 'Tap again' : '✕';
+      if (mapsPendingDelete === rec.id) del.classList.add('confirm');
+      del.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        if (mapsPendingDelete === rec.id) {
+          mapsPendingDelete = null;
+          await deleteMap(rec.id);
+          renderMapsList();
+        } else {
+          mapsPendingDelete = rec.id;
+          renderMapsList();
+        }
+      });
+      row.appendChild(del);
+    }
+    list.appendChild(row);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
 
 // PDF.js 3.x UMD — injected lazily only when a PDF is picked
 async function loadPdfJs() {
@@ -784,15 +1021,22 @@ document.getElementById('map-file').addEventListener('change', async (e) => {
       blob = file;
     }
 
-    // New map → old calibration is invalid
-    calPoints = [];
-    savePoints(); fitTransform(); updateBadge(); refreshMarker();
+    savePoints();   // flush the outgoing map's points before switching
 
-    if (currentBlobUrl) { URL.revokeObjectURL(currentBlobUrl); currentBlobUrl = null; }
-    await saveMapIDB(blob).catch(() => {});
-    currentBlobUrl = URL.createObjectURL(blob);
-    loadMapSource(currentBlobUrl);
-    toast('Map loaded — calibrate to show your location', 5000);
+    let id;
+    try {
+      id = await createOrGetMap(blob, file.name);   // dedup-aware; restores known maps
+    } catch (err) {
+      toast('Storage full — could not save this map', 5000);
+      return;
+    }
+    await activateMap(id);
+    closeMapsUI();
+
+    const rec = await metaGet(id);
+    toast(rec && rec.calPoints && rec.calPoints.length >= 2
+      ? 'Map loaded — calibration restored'
+      : 'Map loaded — calibrate to show your location', 5000);
   } catch (err) {
     toast('Could not load file: ' + err.message, 5000);
   }

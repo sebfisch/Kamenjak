@@ -8,6 +8,10 @@ no account, no internet connection required after the initial load.
 
 - **Any map image** — load a JPEG, PNG, or PDF from your device; stored in
   IndexedDB so it reloads automatically on the next visit
+- **Multiple maps, each with its own calibration** — every map you load is kept,
+  along with its calibration. Switch between maps from the Maps panel and each
+  one comes back exactly as you left it; loading the same file again restores
+  its calibration rather than starting over
 - **GPS tracking** — shows your location as a blue dot once calibrated
 - **Calibration** — tap the crosshair button, walk to a couple of known spots,
   and confirm your position on the map; two points are enough to establish scale,
@@ -32,8 +36,13 @@ no account, no internet connection required after the initial load.
    determine scale and rotation exactly.
 4. Your position appears as a blue dot. The compass shows which way North is.
 
-To use a different map, tap the folder button and pick an image or PDF file.
-Calibration is cleared automatically since it belongs to the previous map.
+To switch maps, tap the Maps button (above the GPS button). The panel lists every
+map you have loaded — including the bundled default — showing how many calibration
+points each has and when it was last used. Tap a map to switch to it; its
+calibration is restored automatically. Tap **Load new map** to import another image
+or PDF. Calibration for the current map is saved continuously, so changing maps and
+coming back never loses your work. To remove a saved map, tap the ✕ on its row and
+tap again to confirm (the bundled default cannot be removed).
 
 ## Calibration tips
 
@@ -55,7 +64,10 @@ Calibration is cleared automatically since it belongs to the previous map.
   coordinates are converted to local Cartesian metres (correcting for
   cos(latitude) compression of longitudes) before fitting, so the transform
   parameters are metric and shear-free by construction.
-- Calibration data is stored in `localStorage`; map image in `IndexedDB`.
+- Maps and their calibration are stored together in `IndexedDB` (one record per
+  map, identified by a content hash so re-imports are de-duplicated). The map
+  currently in view is remembered across reloads. Calibration from older versions
+  (kept in `localStorage`) is migrated automatically on first launch.
 - No build step — the entire app is a single `index.html`.
 
 ---
