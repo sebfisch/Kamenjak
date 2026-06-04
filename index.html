@@ -685,7 +685,7 @@ function toDisplay(raw) {
 // Persist the active map's calibration into its meta record (auto-save, fire-and-forget).
 function savePoints() {
   if (currentMapId == null) return;
-  metaGet(currentMapId).then(rec => {
+  return metaGet(currentMapId).then(rec => {
     if (!rec) return;
     rec.calPoints = calPoints;
     return metaPut(rec);

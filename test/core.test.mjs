@@ -83,17 +83,15 @@ describe('calibration persistence', () => {
   before(async () => {
     h = await freshPage();
     // Inject 2 calibration points and save them to IDB.
-    await h.page.evaluate(() => {
+    await h.page.evaluate(async () => {
       calPoints = [
         { raw: { lat: 44.0, lng: 13.9 },   px: 100, py: 100, accuracy: 5, timestamp: 1 },
         { raw: { lat: 44.001, lng: 13.901 }, px: 200, py: 200, accuracy: 5, timestamp: 2 },
       ];
-      savePoints();
       fitTransform();
       updateBadge();
+      await savePoints();   // wait for the IDB write to actually land
     });
-    // Wait for the async write to complete.
-    await h.page.waitForTimeout(300);
     // Reload — the app should restore the points.
     await h.page.reload({ waitUntil: 'load' });
     await waitForApp(h.page);
@@ -197,8 +195,7 @@ describe('delete', () => {
 
   test('deleteMap removes the map record from IDB', async () => {
     const before = (await h.page.evaluate(idbGetAll)).filter(m => m.id).length;
-    await h.page.evaluate(() => deleteMap(window._delIdB));
-    await h.page.waitForTimeout(200);
+    await h.page.evaluate(() => deleteMap(window._delIdB));   // Promise → awaited
     const after  = (await h.page.evaluate(idbGetAll)).filter(m => m.id).length;
     assert.equal(after, before - 1);
   });
@@ -214,8 +211,7 @@ describe('delete', () => {
 
   test('default map cannot be deleted', async () => {
     const before = (await h.page.evaluate(idbGetAll)).filter(m => m.id).length;
-    await h.page.evaluate(() => deleteMap('default'));
-    await h.page.waitForTimeout(200);
+    await h.page.evaluate(() => deleteMap('default'));   // Promise → awaited (no-op delete)
     const after  = (await h.page.evaluate(idbGetAll)).filter(m => m.id).length;
     assert.equal(after, before);
   });
@@ -362,8 +358,7 @@ describe('delete active map falls back to default', () => {
   after(async () => { await h.ctx.close(); });
 
   test('deleting the active map switches currentMapId to "default"', async () => {
-    await h.page.evaluate(() => deleteMap(window._fallbackId));
-    await h.page.waitForTimeout(300);
+    await h.page.evaluate(() => deleteMap(window._fallbackId));   // Promise → awaited
     const id = await h.page.evaluate(() => currentMapId);
     assert.equal(id, 'default');
   });
