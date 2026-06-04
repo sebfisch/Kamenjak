@@ -291,6 +291,43 @@ describe('compass visibility', () => {
   test('no JS errors', () => { assert.deepEqual(h.errors, []); });
 });
 
+// ── Scale bar visibility ──────────────────────────────────────────────────────
+
+describe('scale bar visibility', () => {
+  let h;
+  before(async () => { h = await freshPage(); });
+  after(async () => { await h.ctx.close(); });
+
+  test('scale bar is not visible on fresh page (no calibration)', async () => {
+    const visible = await h.page.evaluate(() =>
+      document.getElementById('scale-bar').classList.contains('visible')
+    );
+    assert.ok(!visible);
+  });
+
+  test('scale bar becomes visible and labelled after ≥2 calibration points are fit', async () => {
+    // The scale needs the map image (imgH) and view to be ready; wait for it.
+    await h.page.waitForFunction(() => typeof imgH !== 'undefined' && imgH > 0);
+    const res = await h.page.evaluate(() => {
+      calPoints = [
+        { raw: { lat: 44,     lng: 13.9   }, px: 100, py: 200, accuracy: 5, timestamp: 1 },
+        { raw: { lat: 44.001, lng: 13.901 }, px: 300, py: 400, accuracy: 5, timestamp: 2 },
+      ];
+      fitTransform();
+      return {
+        visible: document.getElementById('scale-bar').classList.contains('visible'),
+        label:   document.getElementById('scale-label').textContent,
+        width:   parseFloat(document.getElementById('scale-track').style.width),
+      };
+    });
+    assert.ok(res.visible, 'scale bar should be visible');
+    assert.match(res.label, /^\d+(\.\d+)? (m|km)$/, `unexpected label "${res.label}"`);
+    assert.ok(res.width > 0, `track width should be > 0, got ${res.width}`);
+  });
+
+  test('no JS errors', () => { assert.deepEqual(h.errors, []); });
+});
+
 // ── Active map row highlight ──────────────────────────────────────────────────
 
 describe('active map row highlight', () => {

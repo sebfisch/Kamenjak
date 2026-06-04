@@ -23,6 +23,9 @@ no account, no internet connection required after the initial load.
 - **Rotation-aware** — maps where North is not aligned with the top work correctly
 - **Compass** — once calibrated, a needle in the top-right corner shows which
   direction on screen is North
+- **Scale bar** — once calibrated, a bar in the top-left corner shows a round
+  distance (1, 2, or 5 ×10ⁿ metres or kilometres) drawn to scale, adapting
+  automatically to the calibration and the current zoom level
 - **Accuracy badge** — live ±N m indicator above the GPS button, colour-coded
   green / orange / red
 
@@ -34,7 +37,8 @@ no account, no internet connection required after the initial load.
    the map until the crosshair is exactly on your position, then tap
    **Set point**. One more point from a different spot is enough — two points
    determine scale and rotation exactly.
-4. Your position appears as a blue dot. The compass shows which way North is.
+4. Your position appears as a blue dot. The compass shows which way North is,
+   and the scale bar in the top-left shows how far a given distance is on screen.
 
 To switch maps, tap the Maps button (above the GPS button). The panel lists every
 map you have loaded — including the bundled default — showing how many calibration
