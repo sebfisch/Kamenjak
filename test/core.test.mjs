@@ -234,6 +234,28 @@ describe('leave-one-out summary', () => {
       assert.match(aff, /shear/);
     } finally { await h.ctx.close(); }
   });
+
+  test('selecting a point appends excluded-fit geometry in affine mode only', async () => {
+    const h = await freshPage();
+    try {
+      // 4 points so the fit excluding one still leaves ≥3 for an affine refit.
+      await seedPoints(h.page, 4);
+      // Similarity (default): per-point line shows residual + LOO, no geometry.
+      await h.page.evaluate(() => openPtConfirm(0));
+      const sim = await h.page.textContent('#cal-pt-info');
+      assert.match(sim, /residual/);
+      assert.match(sim, /LOO/);
+      assert.doesNotMatch(sim, /scale ratio/);
+      assert.doesNotMatch(sim, /shear/);
+      // Affine: the excluded-fit scale ratio and shear are appended.
+      await h.page.evaluate(() => { transformMode = 'affine'; fitTransform(); openPtConfirm(0); });
+      const aff = await h.page.textContent('#cal-pt-info');
+      assert.match(aff, /residual/);
+      assert.match(aff, /LOO/);
+      assert.match(aff, /scale ratio/);
+      assert.match(aff, /shear/);
+    } finally { await h.ctx.close(); }
+  });
 });
 
 // ── Per-map isolation ─────────────────────────────────────────────────────────
