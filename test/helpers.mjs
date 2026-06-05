@@ -64,10 +64,14 @@ export async function newPage(browser) {
   return { page, errors, ctx };
 }
 
-// Wait for the app's async startup to finish (activateMap sets currentMapId).
-// More reliable than an arbitrary waitForTimeout.
-export function waitForApp(page) {
-  return page.waitForFunction(() => window.currentMapId !== null, { timeout: 8000 });
+// Wait for the app's async startup to fully settle. Awaits window.__appReady,
+// which resolves only after activateMap and its IndexedDB writes have committed,
+// so a test can inject + persist state without a pending startup write clobbering
+// it. The currentMapId check is a defensive fallback for the IDB-unavailable path.
+export async function waitForApp(page) {
+  await page.waitForFunction(() => window.__appReady !== undefined, { timeout: 8000 });
+  await page.evaluate(() => window.__appReady);
+  await page.waitForFunction(() => window.currentMapId !== null, { timeout: 8000 });
 }
 
 // Serialisable function: passed to page.evaluate to read all IDB meta records.

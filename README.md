@@ -20,6 +20,10 @@ no account, no internet connection required after the initial load.
   scale + rotation + translation, no shear), so the map's right angles stay right
   angles; GPS coordinates are first projected to local Cartesian metres to remove
   the cos(latitude) distortion before fitting
+- **Affine option** — for maps that are stretched or skewed (so a single uniform
+  scale never fits), a per-map toggle in the calibration bar switches to a full
+  affine transform (independent x/y scale + shear). Similarity stays the default;
+  the toggle unlocks once a map has three or more calibration points
 - **Rotation-aware** — maps where North is not aligned with the top work correctly
 - **Compass** — once calibrated, a needle in the top-right corner shows which
   direction on screen is North
@@ -58,6 +62,10 @@ tap again to confirm (the bundled default cannot be removed).
   appear on the map as orange crosses with accuracy circles. Tap a cross to see
   its GPS accuracy and fit residual, then delete it if needed. The ↺ button
   clears all points at once.
+- Keep the default similarity transform for maps that are to scale. If a map is
+  stretched or skewed and the fit stays off no matter how many points you add,
+  tap the **Aff** button next to ↺ (enabled at three or more points) to fit a full
+  affine transform instead. The choice is remembered per map.
 
 ## Technical notes
 
@@ -68,6 +76,11 @@ tap again to confirm (the bundled default cannot be removed).
   coordinates are converted to local Cartesian metres (correcting for
   cos(latitude) compression of longitudes) before fitting, so the transform
   parameters are metric and shear-free by construction.
+- A per-map toggle can switch to a **full affine transform** (6 parameters,
+  allowing independent x/y scale and shear) for stretched or skewed maps. It
+  reuses the same least-squares machinery — the x and y equations decouple into
+  two 3×3 normal systems — and needs three or more non-collinear points; below
+  that it falls back to similarity. Similarity remains the default.
 - Maps and their calibration are stored together in `IndexedDB` (one record per
   map, identified by a content hash so re-imports are de-duplicated). The map
   currently in view is remembered across reloads. Calibration from older versions

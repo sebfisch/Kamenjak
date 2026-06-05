@@ -111,6 +111,76 @@ describe('calibration persistence', () => {
   test('no JS errors', () => { assert.deepEqual(h.errors, []); });
 });
 
+// ── Affine transform toggle ───────────────────────────────────────────────────
+
+describe('affine transform toggle', () => {
+  // Seed the active map with n calibration points and refresh the UI.
+  async function seedPoints(page, n) {
+    await page.evaluate(async (count) => {
+      calPoints = Array.from({ length: count }, (_, i) => ({
+        raw: { lat: 44 + i * 0.001, lng: 13.9 + (i % 2) * 0.001 },
+        px: 100 + i * 50, py: 100 + (i % 2) * 40, accuracy: 5, timestamp: i + 1,
+      }));
+      fitTransform();
+      updateBadge();
+      await savePoints();
+    }, n);
+  }
+
+  test('toggle is disabled below 3 points, enabled at 3', async () => {
+    const h = await freshPage();
+    try {
+      await seedPoints(h.page, 2);
+      assert.equal(await h.page.evaluate(() => document.getElementById('cal-affine').disabled), true);
+      await seedPoints(h.page, 3);
+      assert.equal(await h.page.evaluate(() => document.getElementById('cal-affine').disabled), false);
+    } finally { await h.ctx.close(); }
+  });
+
+  test('clicking the toggle switches the fit to affine', async () => {
+    const h = await freshPage();
+    try {
+      await seedPoints(h.page, 3);
+      await h.page.evaluate(() => document.getElementById('cal-affine').click());
+      const { mode, kind, active } = await h.page.evaluate(() => ({
+        mode: transformMode, kind: T && T.kind,
+        active: document.getElementById('cal-affine').classList.contains('active'),
+      }));
+      assert.equal(mode, 'affine');
+      assert.equal(kind, 'affine');
+      assert.equal(active, true);
+    } finally { await h.ctx.close(); }
+  });
+
+  test('a disabled toggle ignores clicks (stays similarity)', async () => {
+    const h = await freshPage();
+    try {
+      await seedPoints(h.page, 2);
+      await h.page.evaluate(() => document.getElementById('cal-affine').click());
+      const mode = await h.page.evaluate(() => transformMode);
+      assert.equal(mode, 'similarity');
+    } finally { await h.ctx.close(); }
+  });
+
+  test('transform mode persists per-map across reload', async () => {
+    const h = await freshPage();
+    try {
+      await seedPoints(h.page, 3);
+      await h.page.evaluate(async () => {
+        document.getElementById('cal-affine').click();
+        await saveTransformMode();
+      });
+      // The mode is stored in the map's meta record.
+      const stored = await h.page.evaluate(idbGetAll);
+      assert.equal(stored.find(m => m.id === 'default').transformMode, 'affine');
+      // …and restored after a reload.
+      await h.page.reload({ waitUntil: 'load' });
+      await waitForApp(h.page);
+      assert.equal(await h.page.evaluate(() => transformMode), 'affine');
+    } finally { await h.ctx.close(); }
+  });
+});
+
 // ── Per-map isolation ─────────────────────────────────────────────────────────
 
 describe('per-map isolation', () => {
