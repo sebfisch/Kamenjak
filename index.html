@@ -1090,7 +1090,7 @@ document.getElementById('cal-cancel').addEventListener('click', closeCalUI);
 document.getElementById('cal-affine').addEventListener('click', () => {
   if (calPoints.length < 3) return;   // affine needs ≥3 points
   transformMode = transformMode === 'affine' ? 'similarity' : 'affine';
-  saveTransformMode(); fitTransform(); refreshAffineToggle(); refreshMarker();
+  saveTransformMode(); fitTransform(); refreshAffineToggle(); refreshMarker(); showCalMarkers();
   toast(transformMode === 'affine'
     ? 'Using full affine transform (allows stretch/shear).'
     : 'Using similarity transform (default, to scale).');
