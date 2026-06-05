@@ -447,8 +447,8 @@ async function activateMap(id) {
   }
 
   rec.lastUsed = Date.now();
-  metaPut(rec).catch(() => {});
-  metaPut({ key: '__state', currentId: id }).catch(() => {});
+  await metaPut(rec).catch(() => {});
+  await metaPut({ key: '__state', currentId: id }).catch(() => {});
 
   updateBadge();
   loadMapSource(src);   // runs fitTransform() + refreshMarker() once the image loads
@@ -538,9 +538,11 @@ async function migrateIfNeeded() {
   }
 }
 
-// Startup: migrate if needed, then show the last-active map.
+// Startup: migrate if needed, then show the last-active map. Exposed as a promise
+// (resolves once activateMap and its IndexedDB writes have committed) so tests can
+// await a real "ready" signal rather than polling currentMapId.
 setTimeout(hideLoader, 12000);
-(async () => {
+window.__appReady = (async () => {
   try {
     await migrateIfNeeded();
     const state = await metaGet('__state');
