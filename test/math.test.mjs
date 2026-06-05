@@ -258,6 +258,136 @@ describe('rmseMetres', () => {
   });
 });
 
+// ── looResiduals ──────────────────────────────────────────────────────────────
+
+describe('looResiduals', () => {
+  let h;
+  before(async () => {
+    h = await freshPage();
+    await h.page.evaluate(() => { window.imgH = 1000; });
+  });
+  after(async () => { await h.ctx.close(); });
+
+  // Build pixel targets from a known similarity transform (a=6, b=2: uniform
+  // scale + rotation, no shear). Every point is mutually consistent, so leaving
+  // any one out still recovers the same transform.
+  function consistentPts(n) {
+    return `(() => {
+      const lat0 = 44.0, lng0 = 13.9, R = 6371000, rad = Math.PI / 180;
+      const coslat0 = Math.cos(lat0 * rad);
+      const gps = [
+        { lat: 44.000, lng: 13.900 }, { lat: 44.001, lng: 13.901 },
+        { lat: 44.002, lng: 13.899 }, { lat: 43.999, lng: 13.902 },
+        { lat: 44.0015, lng: 13.8985 },
+      ].slice(0, ${n});
+      return gps.map(raw => {
+        const u = (raw.lng - lng0) * coslat0 * R * rad;
+        const v = (raw.lat - lat0) * R * rad;
+        const X = 6 * u - 2 * v + 1000, Y = 2 * u + 6 * v + 1000;
+        return { raw, px: X, py: 1000 - Y, accuracy: 5, timestamp: 1 };
+      });
+    })()`;
+  }
+
+  test('returns [] below threshold (2 points, similarity)', async () => {
+    const r = await h.page.evaluate(pts => looResiduals(pts, 'similarity'),
+      await h.page.evaluate(consistentPts(2)));
+    assert.deepEqual(r, []);
+  });
+
+  test('returns [] when affine has exactly its minimum (3 points)', async () => {
+    const r = await h.page.evaluate(pts => looResiduals(pts, 'affine'),
+      await h.page.evaluate(consistentPts(3)));
+    assert.deepEqual(r, []);
+  });
+
+  test('one value per point at/above threshold', async () => {
+    const simLen = await h.page.evaluate(pts => looResiduals(pts, 'similarity').length,
+      await h.page.evaluate(consistentPts(3)));
+    assert.equal(simLen, 3);
+    const affLen = await h.page.evaluate(pts => looResiduals(pts, 'affine').length,
+      await h.page.evaluate(consistentPts(4)));
+    assert.equal(affLen, 4);
+  });
+
+  test('near-zero deviations when every point is mutually consistent', async () => {
+    const r = await h.page.evaluate(pts => looResiduals(pts, 'similarity'),
+      await h.page.evaluate(consistentPts(4)));
+    assert.equal(r.length, 4);
+    for (const d of r) assert.ok(d < 0.01, `LOO deviation should be ~0, got ${d}`);
+  });
+
+  test('an inconsistent point deviates more under LOO than its full-fit residual', async () => {
+    const { loo, fullRes, looMean, fullRmse, bad } = await h.page.evaluate(basePts => {
+      const pts = JSON.parse(JSON.stringify(basePts));
+      const bad = 1;
+      pts[bad].px += 40;   // pull one point off the consistent grid
+      const T = fitFromPoints(pts, 'similarity');
+      const loo = looResiduals(pts, 'similarity');
+      const fullRes = pts.map(p => pixelResidualM(p, T));
+      return { loo, fullRes, looMean: loo.reduce((a, b) => a + b, 0) / loo.length,
+               fullRmse: rmseMetres(pts, T), bad };
+    }, await h.page.evaluate(consistentPts(3)));
+
+    // LOO never undershoots the full-fit residual: the full fit includes the
+    // point it is scored against, so it always fits it at least as well.
+    loo.forEach((d, i) => assert.ok(d >= fullRes[i] - 1e-6,
+      `LOO[${i}]=${d} should be ≥ full residual ${fullRes[i]}`));
+    // The offset point is much worse out-of-sample, dragging the mean above RMSE.
+    assert.ok(loo[bad] > fullRes[bad] + 1, `offset point LOO ${loo[bad]} should exceed its residual ${fullRes[bad]}`);
+    assert.ok(looMean > fullRmse, `mean LOO ${looMean} should exceed full RMSE ${fullRmse}`);
+  });
+});
+
+// ── looStats ──────────────────────────────────────────────────────────────────
+
+describe('looStats', () => {
+  let h;
+  before(async () => {
+    h = await freshPage();
+    await h.page.evaluate(() => { window.imgH = 1000; });
+  });
+  after(async () => { await h.ctx.close(); });
+
+  function pts(n) {
+    return `Array.from({ length: ${n} }, (_, i) => ({
+      raw: { lat: 44 + i * 0.001, lng: 13.9 + (i % 2) * 0.0012 + i * 0.0001 },
+      px: 100 + i * 50, py: 100 + (i % 3) * 37, accuracy: 5, timestamp: i + 1,
+    }))`;
+  }
+
+  test('returns null below threshold (2 points)', async () => {
+    const s = await h.page.evaluate(p => looStats(p, 'similarity'),
+      await h.page.evaluate(pts(2)));
+    assert.equal(s, null);
+  });
+
+  test('mean and median match a direct computation (odd count → middle value)', async () => {
+    const { stats, manual } = await h.page.evaluate(p => {
+      const r = looResiduals(p, 'similarity').filter(Number.isFinite);
+      const mean = r.reduce((a, b) => a + b, 0) / r.length;
+      const srt = [...r].sort((a, b) => a - b), m = Math.floor(srt.length / 2);
+      const median = srt.length % 2 ? srt[m] : (srt[m - 1] + srt[m]) / 2;
+      return { stats: looStats(p, 'similarity'), manual: { mean, median, n: r.length } };
+    }, await h.page.evaluate(pts(3)));
+    assert.equal(stats.n, 3);
+    assert.equal(stats.n, manual.n);
+    assert.ok(Math.abs(stats.mean - manual.mean) < 1e-9, `mean ${stats.mean} vs ${manual.mean}`);
+    assert.ok(Math.abs(stats.median - manual.median) < 1e-9, `median ${stats.median} vs ${manual.median}`);
+  });
+
+  test('median averages the middle two for an even count', async () => {
+    const { stats, manual } = await h.page.evaluate(p => {
+      const r = looResiduals(p, 'similarity').filter(Number.isFinite);
+      const srt = [...r].sort((a, b) => a - b), m = srt.length / 2;
+      const median = (srt[m - 1] + srt[m]) / 2;
+      return { stats: looStats(p, 'similarity'), manual: { median, n: r.length } };
+    }, await h.page.evaluate(pts(4)));
+    assert.equal(stats.n, 4);
+    assert.ok(Math.abs(stats.median - manual.median) < 1e-9, `median ${stats.median} vs ${manual.median}`);
+  });
+});
+
 // ── niceScaleMetres ───────────────────────────────────────────────────────────
 
 describe('niceScaleMetres', () => {

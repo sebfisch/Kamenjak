@@ -181,6 +181,44 @@ describe('affine transform toggle', () => {
   });
 });
 
+// ── Leave-one-out summary ─────────────────────────────────────────────────────
+
+describe('leave-one-out summary', () => {
+  async function seedPoints(page, n) {
+    await page.evaluate(count => {
+      calPoints = Array.from({ length: count }, (_, i) => ({
+        raw: { lat: 44 + i * 0.001, lng: 13.9 + (i % 2) * 0.0012 + i * 0.0001 },
+        px: 100 + i * 50, py: 100 + (i % 3) * 37, accuracy: 5, timestamp: i + 1,
+      }));
+      fitTransform();
+    }, n);
+  }
+
+  test('summary is empty below threshold and populated at/above it', async () => {
+    const h = await freshPage();
+    try {
+      await seedPoints(h.page, 2);
+      assert.equal(await h.page.textContent('#cal-loo'), '');
+      await seedPoints(h.page, 3);
+      const txt = await h.page.textContent('#cal-loo');
+      assert.match(txt, /Leave-one-out/);
+      assert.match(txt, /mean/);
+      assert.match(txt, /median/);
+    } finally { await h.ctx.close(); }
+  });
+
+  test('selecting a point appends its LOO deviation to the residual line', async () => {
+    const h = await freshPage();
+    try {
+      await seedPoints(h.page, 3);
+      await h.page.evaluate(() => openPtConfirm(0));
+      const info = await h.page.textContent('#cal-pt-info');
+      assert.match(info, /residual/);
+      assert.match(info, /LOO/);
+    } finally { await h.ctx.close(); }
+  });
+});
+
 // ── Per-map isolation ─────────────────────────────────────────────────────────
 
 describe('per-map isolation', () => {

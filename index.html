@@ -175,6 +175,13 @@
       display: flex; gap: 10px; padding: 14px 16px;
       background: rgba(0,0,0,0.85);
     }
+    #cal-loo {
+      pointer-events: auto;
+      position: absolute; left: 0; right: 0; bottom: 72px;
+      padding: 8px 16px; text-align: center;
+      color: #ccc; font-size: 13px; background: rgba(0,0,0,0.85);
+    }
+    #cal-loo:empty { display: none; }
     .cal-action {
       flex: 1; padding: 14px 0; border: none; border-radius: 10px;
       font-size: 16px; font-weight: 600;
@@ -308,6 +315,7 @@
     <span id="cal-gps-status">Waiting for GPS…</span>
   </div>
   <div id="cal-cross"><div id="cal-cross-dot"></div></div>
+  <div id="cal-loo"></div>
   <div id="cal-bar">
     <button class="cal-action" id="cal-cancel">Cancel</button>
     <button class="cal-action" id="cal-set">Set point</button>
@@ -706,6 +714,39 @@ function rmseMetres(pts, t) {
   return Math.sqrt(pts.reduce((s,p) => s + pixelResidualM(p,t)**2, 0) / pts.length);
 }
 
+// Minimum points each mode needs to be determined (mirrors the fit functions).
+const MIN_POINTS = { similarity: 2, affine: 3 };
+
+// Effective mode actually used to fit, mirroring fitTransform's affine→similarity
+// fallback below 3 points.
+function effectiveMode(pts = calPoints) {
+  return (transformMode === 'affine' && pts.length >= 3) ? 'affine' : 'similarity';
+}
+
+// Leave-one-out deviations (metres), one per point: refit the transform without
+// each point using `mode`, then measure that excluded point's residual under the
+// reduced fit — an out-of-sample estimate of calibration quality. Returns [] when
+// there aren't enough points for every leave-one-out subset to stay determined
+// (length must exceed the mode's minimum).
+function looResiduals(pts = calPoints, mode = effectiveMode(pts)) {
+  if (pts.length <= MIN_POINTS[mode]) return [];
+  return pts.map((p, i) => {
+    const t = fitFromPoints(pts.filter((_, j) => j !== i), mode);
+    return t ? pixelResidualM(p, t) : Infinity;
+  });
+}
+
+// Aggregate the leave-one-out deviations → { mean, median, n }, or null when LOO
+// is unavailable (too few points).
+function looStats(pts = calPoints, mode = effectiveMode(pts)) {
+  const r = looResiduals(pts, mode).filter(Number.isFinite);
+  if (!r.length) return null;
+  const mean = r.reduce((a, b) => a + b, 0) / r.length;
+  const s = [...r].sort((a, b) => a - b), m = Math.floor(s.length / 2);
+  const median = s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  return { mean, median, n: r.length };
+}
+
 let T = null;
 function fitTransform() {
   // Affine needs ≥3 points; fall back to similarity below that even when selected.
@@ -713,6 +754,18 @@ function fitTransform() {
   T = fitFromPoints(calPoints, mode);
   updateCompass();
   updateScale();
+  updateLooSummary();
+}
+
+// Mean/median leave-one-out deviation shown under the calibration controls when
+// no individual point is selected. Hidden (empty) when LOO is unavailable.
+function updateLooSummary() {
+  const el = document.getElementById('cal-loo');
+  if (!el) return;
+  const s = looStats();
+  el.textContent = s
+    ? `Leave-one-out deviation · mean ${Math.round(s.mean)} m · median ${Math.round(s.median)} m`
+    : '';
 }
 
 // North in meters space = (0,1); the linear part maps it to (-b, a) for
@@ -939,6 +992,7 @@ function openCalUI() {
   }
   document.getElementById('cal-ui').classList.add('active');
   updateGpsStatus();
+  updateLooSummary();
   bannerTimer = setInterval(updateGpsStatus, 1000);
   requestFreshFix();
   showCalMarkers();
@@ -1045,8 +1099,10 @@ function openPtConfirm(i) {
   pendingDeleteIdx = i;
   const p = calPoints[i];
   const res = T ? ` · Δ${Math.round(pixelResidualM(p, T))} m residual` : '';
+  const loo = looResiduals();
+  const looTxt = Number.isFinite(loo[i]) ? ` · Δ${Math.round(loo[i])} m LOO` : '';
   document.getElementById('cal-pt-info').textContent =
-    `Point ${i + 1} · ±${Math.round(p.accuracy)} m GPS${res}`;
+    `Point ${i + 1} · ±${Math.round(p.accuracy)} m GPS${res}${looTxt}`;
   document.getElementById('cal-pt-confirm').classList.add('active');
 }
 
