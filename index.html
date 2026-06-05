@@ -794,6 +794,17 @@ function fitTransform() {
   updateCalDiagnostics();
 }
 
+// Human-readable affine geometry of transform t (scale ratio, shear, mirroring),
+// or '' when t has no diagnostics. Wording is shared by the calibration summary
+// and the per-point info line.
+function geometryText(t) {
+  const d = transformDiagnostics(t);
+  if (!d) return '';
+  let s = `scale ratio ${d.relScale.toFixed(2)} · shear ${Math.round(d.shearDeg)}°`;
+  if (d.reflected) s += ' · mirrored';
+  return s;
+}
+
 // Diagnostics shown under the calibration controls when no individual point is
 // selected: mean/median leave-one-out deviation, plus — when an affine transform is
 // actually in effect — its scale-anisotropy and shear (uninformative for similarity,
@@ -805,12 +816,8 @@ function updateCalDiagnostics() {
   const s = looStats();
   if (s) parts.push(`Leave-one-out deviation · mean ${Math.round(s.mean)} m · median ${Math.round(s.median)} m`);
   if (effectiveMode(calPoints) === 'affine') {
-    const d = transformDiagnostics(T);
-    if (d) {
-      let geom = `scale ratio ${d.relScale.toFixed(2)} · shear ${Math.round(d.shearDeg)}°`;
-      if (d.reflected) geom += ' · mirrored';
-      parts.push(geom);
-    }
+    const geom = geometryText(T);
+    if (geom) parts.push(geom);
   }
   el.textContent = parts.join(' · ');
 }
@@ -1147,10 +1154,17 @@ function openPtConfirm(i) {
   pendingDeleteIdx = i;
   const p = calPoints[i];
   const res = T ? ` · Δ${Math.round(pixelResidualM(p, T))} m residual` : '';
-  const loo = looResiduals();
-  const looTxt = Number.isFinite(loo[i]) ? ` · Δ${Math.round(loo[i])} m LOO` : '';
+  // Refit without this point — the basis for its LOO deviation and, for affine
+  // maps, the excluded-fit geometry. Available only when enough points remain
+  // for the reduced fit to stay determined (mirrors looResiduals).
+  const mode = effectiveMode();
+  const tExcl = calPoints.length > MIN_POINTS[mode]
+    ? fitFromPoints(calPoints.filter((_, j) => j !== i), mode) : null;
+  const looVal = tExcl ? pixelResidualM(p, tExcl) : Infinity;
+  const looTxt = Number.isFinite(looVal) ? ` · Δ${Math.round(looVal)} m LOO` : '';
+  const geomTxt = (mode === 'affine' && tExcl) ? ` · ${geometryText(tExcl)}` : '';
   document.getElementById('cal-pt-info').textContent =
-    `Point ${i + 1} · ±${Math.round(p.accuracy)} m GPS${res}${looTxt}`;
+    `Point ${i + 1} · ±${Math.round(p.accuracy)} m GPS${res}${looTxt}${geomTxt}`;
   document.getElementById('cal-pt-confirm').classList.add('active');
 }
 
