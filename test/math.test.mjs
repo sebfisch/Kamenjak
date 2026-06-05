@@ -101,6 +101,99 @@ describe('fitFromPoints', () => {
   });
 });
 
+// ── fitFromPoints (affine) ──────────────────────────────────────────────────
+
+describe('fitFromPoints (affine mode)', () => {
+  let h;
+  before(async () => {
+    h = await freshPage();
+    await h.page.evaluate(() => { window.imgH = 1000; });
+  });
+  after(async () => { await h.ctx.close(); });
+
+  test('returns null for fewer than 3 points', async () => {
+    const t = await h.page.evaluate(() =>
+      fitFromPoints([
+        { raw: { lat: 44.000, lng: 13.900 }, px: 100, py: 200 },
+        { raw: { lat: 44.001, lng: 13.901 }, px: 300, py: 400 },
+      ], 'affine')
+    );
+    assert.equal(t, null);
+  });
+
+  test('returns null for collinear points (degenerate matrix)', async () => {
+    const t = await h.page.evaluate(() =>
+      fitFromPoints([
+        { raw: { lat: 44.000, lng: 13.900 }, px: 100, py: 100 },
+        { raw: { lat: 44.001, lng: 13.901 }, px: 200, py: 200 },
+        { raw: { lat: 44.002, lng: 13.902 }, px: 300, py: 300 },
+      ], 'affine')
+    );
+    assert.equal(t, null);
+  });
+
+  test('tags the transform with kind "affine"', async () => {
+    const kind = await h.page.evaluate(() => {
+      const t = fitFromPoints([
+        { raw: { lat: 44.000, lng: 13.900 }, px: 100, py: 200 },
+        { raw: { lat: 44.001, lng: 13.901 }, px: 300, py: 400 },
+        { raw: { lat: 44.002, lng: 13.899 }, px: 500, py: 150 },
+      ], 'affine');
+      return t && t.kind;
+    });
+    assert.equal(kind, 'affine');
+  });
+
+  test('round-trip: fit then apply recovers original pixel positions', async () => {
+    const { ok, maxErr } = await h.page.evaluate(() => {
+      const pts = [
+        { raw: { lat: 44.000, lng: 13.900 }, px: 100, py: 200 },
+        { raw: { lat: 44.001, lng: 13.901 }, px: 300, py: 400 },
+        { raw: { lat: 44.002, lng: 13.899 }, px: 500, py: 150 },
+      ];
+      const t = fitFromPoints(pts, 'affine');
+      if (!t) return { ok: false, maxErr: null };
+      let maxErr = 0;
+      for (const p of pts) {
+        const out = applyTransform(t, p.raw);
+        const err = Math.sqrt((out.px - p.px) ** 2 + (out.py - p.py) ** 2);
+        if (err > maxErr) maxErr = err;
+      }
+      return { ok: true, maxErr };
+    });
+    assert.ok(ok, 'affine fitFromPoints should return a non-null transform');
+    assert.ok(maxErr < 0.001, `round-trip pixel error too large: ${maxErr}`);
+  });
+
+  test('fits a stretched map that similarity cannot (lower RMSE)', async () => {
+    // Build pixel targets from a deliberately anisotropic map: the east axis is
+    // scaled differently from the north axis, so no similarity transform fits.
+    const { simRmse, affRmse } = await h.page.evaluate(() => {
+      const lat0 = 44.0, lng0 = 13.9;
+      const R = 6371000, rad = Math.PI / 180;
+      const coslat0 = Math.cos(lat0 * rad);
+      const gps = [
+        { lat: 44.000, lng: 13.900 },
+        { lat: 44.001, lng: 13.901 },
+        { lat: 44.002, lng: 13.899 },
+        { lat: 43.999, lng: 13.902 },
+      ];
+      const pts = gps.map(raw => {
+        const u = (raw.lng - lng0) * coslat0 * R * rad;
+        const v = (raw.lat - lat0) * R * rad;
+        // 8 px/m east, 3 px/m north → pure stretch, no shear/rotation.
+        const X = 8 * u + 1000, Y = 3 * v + 1000;
+        return { raw, px: X, py: 1000 - Y };
+      });
+      const sim = fitFromPoints(pts, 'similarity');
+      const aff = fitFromPoints(pts, 'affine');
+      return { simRmse: rmseMetres(pts, sim), affRmse: rmseMetres(pts, aff) };
+    });
+    assert.ok(simRmse > 1, `similarity should misfit a stretched map, got ${simRmse}`);
+    assert.ok(affRmse < 0.01, `affine should fit a stretched map, got ${affRmse}`);
+  });
+});
+
 // ── applyTransform ────────────────────────────────────────────────────────────
 
 describe('applyTransform', () => {
@@ -129,6 +222,13 @@ describe('pxPerMetre', () => {
   test('extracts uniform scale: {a:3, b:4} → 5', async () => {
     const s = await h.page.evaluate(() => pxPerMetre({ a: 3, b: 4 }));
     assert.ok(Math.abs(s - 5) < 1e-10, `expected 5, got ${s}`);
+  });
+
+  test('affine: √|det| of the linear part (8 px/m east, 2 px/m north → 4)', async () => {
+    const s = await h.page.evaluate(() =>
+      pxPerMetre({ kind: 'affine', a: 8, b: 0, c: 0, d: 2 })
+    );
+    assert.ok(Math.abs(s - 4) < 1e-10, `expected 4, got ${s}`);
   });
 });
 

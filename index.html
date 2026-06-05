@@ -187,6 +187,13 @@
       background: rgba(255,80,80,0.25); color: #ff8080;
       font-size: 20px;
     }
+    #cal-affine  {
+      flex: 0 0 auto; width: 48px; padding: 0;
+      background: rgba(255,255,255,0.15); color: white;
+      font-size: 15px;
+    }
+    #cal-affine.active { background: #2196F3; color: white; }
+    #cal-affine:disabled { opacity: 0.4; cursor: default; }
 
     /* ── Cal-point markers (shown on map while cal-ui is open) ── */
     .cal-pt-cross { position: relative; width: 20px; height: 20px; }
@@ -304,6 +311,7 @@
   <div id="cal-bar">
     <button class="cal-action" id="cal-cancel">Cancel</button>
     <button class="cal-action" id="cal-set">Set point</button>
+    <button class="cal-action" id="cal-affine" title="Add 3+ calibration points to enable the full affine transform" disabled>Aff</button>
     <button class="cal-action" id="cal-reset" title="Clear all calibration points">↺</button>
   </div>
 </div>
@@ -424,6 +432,7 @@ async function activateMap(id) {
   if (!rec) return;
   currentMapId = id;
   calPoints = Array.isArray(rec.calPoints) ? rec.calPoints : [];
+  transformMode = rec.transformMode === 'affine' ? 'affine' : 'similarity';
 
   let src;
   if (rec.isDefault) {
@@ -541,14 +550,21 @@ setTimeout(hideLoader, 12000);
   }
 })();
 
-// ── Calibration: similarity least-squares (GPS → image pixels) ───────────────
+// ── Calibration: least-squares fit (GPS → image pixels) ─────────────────────
 // Points: { raw:{lat,lng}, px, py, accuracy, timestamp }
 //   px, py = image pixel coords; py=0 is top-left, increases downward.
-// Transform T: similarity — uniform scale + rotation + translation, no shear.
-//   f(g) = [[a,-b],[b,a]]·meters(g) + [tx,ty],  a=s·cosθ, b=s·sinθ
-// Requires ≥ 2 non-coincident points; returns null otherwise.
+// Two transform models, selected per-map via transformMode:
+//   • similarity (default) — uniform scale + rotation + translation, no shear.
+//       f(g) = [[a,-b],[b,a]]·meters(g) + [tx,ty],  a=s·cosθ, b=s·sinθ
+//       Requires ≥ 2 non-coincident points.
+//   • affine — full linear part (independent x/y scale + shear) + translation,
+//       for maps that are stretched/skewed.
+//       f(g) = [[a,b],[c,d]]·meters(g) + [tx,ty];  object tagged kind:'affine'.
+//       Requires ≥ 3 non-collinear points.
+// Returns null when underdetermined or degenerate.
 
 let calPoints = [];   // working copy of the active map's points; loaded via activateMap()
+let transformMode = 'similarity';   // 'similarity' | 'affine'; per-map, loaded via activateMap()
 
 const GEO_R = 6371000;
 
@@ -560,57 +576,118 @@ function geoToMeters(raw, lat0, lng0) {
   };
 }
 
-function fitFromPoints(pts) {
-  if (pts.length < 2) return null;
+// Solve the n×(n+1) augmented system A·x = b (b is the last column of each row),
+// in place, via Gaussian elimination with partial pivoting. Returns the solution
+// vector, or null if the matrix is (near-)singular. The pivot test is relative to
+// the largest coefficient so it scales with the inputs (metre-sized coordinates),
+// catching degenerate point layouts (coincident/collinear) regardless of units.
+function solveLinear(A) {
+  const n = A.length;
+  let scale = 0;
+  for (let i = 0; i < n; i++)
+    for (let j = 0; j < n; j++) scale = Math.max(scale, Math.abs(A[i][j]));
+  const eps = scale * 1e-12 || 1e-14;
+  for (let col = 0; col < n; col++) {
+    let maxRow = col;
+    for (let row = col+1; row < n; row++)
+      if (Math.abs(A[row][col]) > Math.abs(A[maxRow][col])) maxRow = row;
+    [A[col], A[maxRow]] = [A[maxRow], A[col]];
+    if (Math.abs(A[col][col]) < eps) return null;
+    for (let row = col+1; row < n; row++) {
+      const f = A[row][col] / A[col][col];
+      for (let j = col; j <= n; j++) A[row][j] -= f * A[col][j];
+    }
+  }
+  const x = new Array(n).fill(0);
+  for (let i = n-1; i >= 0; i--) {
+    x[i] = A[i][n];
+    for (let j = i+1; j < n; j++) x[i] -= A[i][j] * x[j];
+    x[i] /= A[i][i];
+  }
+  return x;
+}
+
+// Reference point (centroid) shared by both fits; converts each point's GPS to
+// local metres (u,v) and pixel target (x = px, y = imgH - py, i.e. y-up).
+function fitPrep(pts) {
   const lat0 = pts.reduce((s, p) => s + p.raw.lat, 0) / pts.length;
   const lng0 = pts.reduce((s, p) => s + p.raw.lng, 0) / pts.length;
-  let suv2=0, su=0, sv=0, suxvy=0, svxuy=0, sx=0, sy=0;
-  for (const p of pts) {
+  const rows = pts.map(p => {
     const { u, v } = geoToMeters(p.raw, lat0, lng0);
-    const x = p.px, y = imgH - p.py;
+    return { u, v, x: p.px, y: imgH - p.py };
+  });
+  return { lat0, lng0, rows };
+}
+
+// Similarity fit (4 DOF). f(g) = [[a,-b],[b,a]]·meters(g) + [tx,ty].
+function fitSimilarity(pts) {
+  if (pts.length < 2) return null;
+  const { lat0, lng0, rows } = fitPrep(pts);
+  let suv2=0, su=0, sv=0, suxvy=0, svxuy=0, sx=0, sy=0;
+  for (const { u, v, x, y } of rows) {
     suv2 += u*u + v*v; su += u; sv += v;
     suxvy += u*x + v*y; svxuy += -v*x + u*y;
     sx += x; sy += y;
   }
   const n = pts.length;
-  const A = [
+  const θ = solveLinear([
     [suv2, 0,    su,  sv,  suxvy],
     [0,    suv2, -sv, su,  svxuy],
     [su,   -sv,  n,   0,   sx   ],
     [sv,   su,   0,   n,   sy   ]
-  ];
-  for (let col = 0; col < 4; col++) {
-    let maxRow = col;
-    for (let row = col+1; row < 4; row++)
-      if (Math.abs(A[row][col]) > Math.abs(A[maxRow][col])) maxRow = row;
-    [A[col], A[maxRow]] = [A[maxRow], A[col]];
-    if (Math.abs(A[col][col]) < 1e-14) return null;
-    for (let row = col+1; row < 4; row++) {
-      const f = A[row][col] / A[col][col];
-      for (let j = col; j < 5; j++) A[row][j] -= f * A[col][j];
-    }
-  }
-  const θ = [0, 0, 0, 0];
-  for (let i = 3; i >= 0; i--) {
-    θ[i] = A[i][4];
-    for (let j = i+1; j < 4; j++) θ[i] -= A[i][j] * θ[j];
-    θ[i] /= A[i][i];
-  }
+  ]);
+  if (!θ) return null;
   return { a: θ[0], b: θ[1], tx: θ[2], ty: θ[3], lat0, lng0 };
+}
+
+// Affine fit (6 DOF). f(g) = [[a,b],[c,d]]·meters(g) + [tx,ty]. The x and y
+// equations decouple into two independent 3×3 least-squares systems sharing the
+// same normal matrix [[Σu² Σuv Σu],[Σuv Σv² Σv],[Σu Σv n]].
+function fitAffine(pts) {
+  if (pts.length < 3) return null;
+  const { lat0, lng0, rows } = fitPrep(pts);
+  let suu=0, suv=0, svv=0, su=0, sv=0;
+  let sux=0, svx=0, sx=0, suy=0, svy=0, sy=0;
+  for (const { u, v, x, y } of rows) {
+    suu += u*u; suv += u*v; svv += v*v; su += u; sv += v;
+    sux += u*x; svx += v*x; sx += x;
+    suy += u*y; svy += v*y; sy += y;
+  }
+  const n = pts.length;
+  const abx = solveLinear([
+    [suu, suv, su, sux],
+    [suv, svv, sv, svx],
+    [su,  sv,  n,  sx ]
+  ]);
+  const cdy = solveLinear([
+    [suu, suv, su, suy],
+    [suv, svv, sv, svy],
+    [su,  sv,  n,  sy ]
+  ]);
+  if (!abx || !cdy) return null;
+  return { kind: 'affine', a: abx[0], b: abx[1], tx: abx[2],
+           c: cdy[0], d: cdy[1], ty: cdy[2], lat0, lng0 };
+}
+
+function fitFromPoints(pts, mode = 'similarity') {
+  return mode === 'affine' ? fitAffine(pts) : fitSimilarity(pts);
 }
 
 // GPS coords → image pixel coords {px, py}
 function applyTransform(t, raw) {
   if (!t) return null;
   const { u, v } = geoToMeters(raw, t.lat0, t.lng0);
-  const X = t.a*u - t.b*v + t.tx;
-  const Y = t.b*u + t.a*v + t.ty;
+  const X = t.kind === 'affine' ? t.a*u + t.b*v + t.tx : t.a*u - t.b*v + t.tx;
+  const Y = t.kind === 'affine' ? t.c*u + t.d*v + t.ty : t.b*u + t.a*v + t.ty;
   return { px: X, py: imgH - Y };
 }
 
-// Pixels per metre = uniform scale s = √(a²+b²)
+// Representative pixels-per-metre scale. Similarity: uniform s = √(a²+b²).
+// Affine: √|det| of the linear part (geometric mean of the x/y scales), which
+// equals √(a²+b²) for the similarity case where [[a,-b],[b,a]].
 function pxPerMetre(t) {
   if (!t) return 0;
+  if (t.kind === 'affine') return Math.sqrt(Math.abs(t.a*t.d - t.b*t.c));
   return Math.sqrt(t.a*t.a + t.b*t.b);
 }
 
@@ -629,18 +706,21 @@ function rmseMetres(pts, t) {
 
 let T = null;
 function fitTransform() {
-  T = fitFromPoints(calPoints);
+  // Affine needs ≥3 points; fall back to similarity below that even when selected.
+  const mode = (transformMode === 'affine' && calPoints.length >= 3) ? 'affine' : 'similarity';
+  T = fitFromPoints(calPoints, mode);
   updateCompass();
   updateScale();
 }
 
-// North in meters space = (0,1); similarity (y-up frame) maps it to (-b, a).
-// In screen space that direction is already correct: atan2(-b, a) rotates the needle.
+// North in meters space = (0,1); the linear part maps it to (-b, a) for
+// similarity or (b, d) for affine. atan2(north_x, north_y) rotates the needle.
 function updateCompass() {
   const el = document.getElementById('compass');
-  const s = T ? Math.sqrt(T.a*T.a + T.b*T.b) : 0;
-  if (s < 1e-10) { el.classList.remove('visible'); return; }
-  const angle = Math.atan2(-T.b, T.a) * 180 / Math.PI;
+  if (!T || pxPerMetre(T) < 1e-10) { el.classList.remove('visible'); return; }
+  const nx = T.kind === 'affine' ? T.b : -T.b;
+  const ny = T.kind === 'affine' ? T.d : T.a;
+  const angle = Math.atan2(nx, ny) * 180 / Math.PI;
   document.getElementById('compass-needle').setAttribute('transform', `rotate(${angle})`);
   el.classList.add('visible');
 }
@@ -702,11 +782,37 @@ function savePoints() {
   }).catch(() => {});
 }
 
+// Persist the active map's chosen transform mode (auto-save, fire-and-forget).
+function saveTransformMode() {
+  if (currentMapId == null) return;
+  return metaGet(currentMapId).then(rec => {
+    if (!rec) return;
+    rec.transformMode = transformMode;
+    return metaPut(rec);
+  }).catch(() => {});
+}
+
 function updateBadge() {
   const el = document.getElementById('cal-count');
   const n  = calPoints.length;
   el.textContent = n || '';
   el.className   = n >= 2 ? 'many' : n >= 1 ? 'one' : '';
+  refreshAffineToggle();
+}
+
+// Reflect transform mode + point count on the affine toggle. Affine needs ≥3
+// points, so the toggle is disabled (and shown inactive) below that threshold.
+function refreshAffineToggle() {
+  const btn = document.getElementById('cal-affine');
+  if (!btn) return;
+  const enabled = calPoints.length >= 3;
+  const on = transformMode === 'affine';
+  btn.disabled = !enabled;
+  btn.classList.toggle('active', on && enabled);
+  btn.title = !enabled
+    ? 'Add 3+ calibration points to enable the full affine transform'
+    : on ? 'Using full affine transform — tap for similarity'
+         : 'Using similarity transform — tap for full affine';
 }
 updateBadge();
 
@@ -968,6 +1074,15 @@ document.getElementById('cal-set').addEventListener('click', () => {
 });
 
 document.getElementById('cal-cancel').addEventListener('click', closeCalUI);
+
+document.getElementById('cal-affine').addEventListener('click', () => {
+  if (calPoints.length < 3) return;   // affine needs ≥3 points
+  transformMode = transformMode === 'affine' ? 'similarity' : 'affine';
+  saveTransformMode(); fitTransform(); refreshAffineToggle(); refreshMarker();
+  toast(transformMode === 'affine'
+    ? 'Using full affine transform (allows stretch/shear).'
+    : 'Using similarity transform (default, to scale).');
+});
 
 document.getElementById('cal-reset').addEventListener('click', () => {
   calPoints = [];
