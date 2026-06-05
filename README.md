@@ -92,11 +92,12 @@ tap again to confirm (the bundled default cannot be removed).
 The tests use [Playwright](https://playwright.dev/) for headless-browser automation
 and Node's built-in test runner (`node:test`). Node 22 is required.
 
-Install test dependencies once, then install the Chromium browser Playwright needs:
+Install the test dependencies once — Chromium is pulled in automatically by the
+`@playwright/browser-chromium` dev dependency, so no separate browser install step
+is needed:
 
 ```sh
 npm install
-npx playwright install chromium
 ```
 
 Run the suite:

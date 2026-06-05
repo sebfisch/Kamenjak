@@ -206,10 +206,11 @@
     .cal-pt-cross { position: relative; width: 20px; height: 20px; }
     .cal-pt-cross::before, .cal-pt-cross::after {
       content: ''; position: absolute;
-      background: rgba(255,152,0,0.95); border-radius: 1px;
+      background: var(--cal-cross-color, rgba(0,200,83,0.95)); border-radius: 1px;
     }
     .cal-pt-cross::before { width: 100%; height: 2px; top: 50%; transform: translateY(-50%); }
     .cal-pt-cross::after  { width: 2px; height: 100%; left: 50%; transform: translateX(-50%); }
+    .cal-pt-cross.disabled { --cal-cross-color: rgba(150,150,150,0.65); }
 
     /* ── Per-point deletion confirmation bar ── */
     #cal-pt-confirm {
@@ -222,7 +223,11 @@
       padding: 12px 20px 4px; color: #ccc; font-size: 13px; text-align: center;
     }
     #cal-pt-bar { display: flex; gap: 10px; padding: 8px 16px 16px; }
-    #cal-pt-delete { background: rgba(255,80,80,0.35); color: #ff8080; }
+    #cal-pt-toggle { background: rgba(255,255,255,0.15); color: white; }
+    #cal-pt-delete {
+      flex: 0 0 auto; width: 48px; padding: 0; font-size: 18px;
+      background: rgba(255,80,80,0.35); color: #ff8080;
+    }
 
     /* ── Maps panel (switch between saved maps) ── */
     #maps-ui {
@@ -328,7 +333,8 @@
   <div id="cal-pt-info"></div>
   <div id="cal-pt-bar">
     <button class="cal-action" id="cal-pt-cancel">Cancel</button>
-    <button class="cal-action" id="cal-pt-delete">Delete point</button>
+    <button class="cal-action" id="cal-pt-toggle">Disable</button>
+    <button class="cal-action" id="cal-pt-delete" title="Delete point">✕</button>
   </div>
 </div>
 
@@ -470,7 +476,7 @@ async function switchToMap(id) {
   await activateMap(id);
   closeMapsUI();
   const rec = await metaGet(id);
-  toast(rec && rec.calPoints && rec.calPoints.length >= 2
+  toast(rec && rec.calPoints && enabledPoints(rec.calPoints).length >= 2
     ? 'Map switched — calibration restored'
     : 'Map switched');
 }
@@ -754,9 +760,15 @@ function rmseMetres(pts, t) {
 // Minimum points each mode needs to be determined (mirrors the fit functions).
 const MIN_POINTS = { similarity: 2, affine: 3 };
 
+// Points participating in the fit: enabled unless explicitly disabled, so old
+// data lacking the flag — and freshly set points — count as enabled.
+function enabledPoints(pts = calPoints) {
+  return pts.filter(p => p.enabled !== false);
+}
+
 // Effective mode actually used to fit, mirroring fitTransform's affine→similarity
 // fallback below 3 points.
-function effectiveMode(pts = calPoints) {
+function effectiveMode(pts = enabledPoints()) {
   return (transformMode === 'affine' && pts.length >= 3) ? 'affine' : 'similarity';
 }
 
@@ -765,7 +777,7 @@ function effectiveMode(pts = calPoints) {
 // reduced fit — an out-of-sample estimate of calibration quality. Returns [] when
 // there aren't enough points for every leave-one-out subset to stay determined
 // (length must exceed the mode's minimum).
-function looResiduals(pts = calPoints, mode = effectiveMode(pts)) {
+function looResiduals(pts = enabledPoints(), mode = effectiveMode(pts)) {
   if (pts.length <= MIN_POINTS[mode]) return [];
   return pts.map((p, i) => {
     const t = fitFromPoints(pts.filter((_, j) => j !== i), mode);
@@ -775,7 +787,7 @@ function looResiduals(pts = calPoints, mode = effectiveMode(pts)) {
 
 // Aggregate the leave-one-out deviations → { mean, median, n }, or null when LOO
 // is unavailable (too few points).
-function looStats(pts = calPoints, mode = effectiveMode(pts)) {
+function looStats(pts = enabledPoints(), mode = effectiveMode(pts)) {
   const r = looResiduals(pts, mode).filter(Number.isFinite);
   if (!r.length) return null;
   const mean = r.reduce((a, b) => a + b, 0) / r.length;
@@ -787,8 +799,10 @@ function looStats(pts = calPoints, mode = effectiveMode(pts)) {
 let T = null;
 function fitTransform() {
   // Affine needs ≥3 points; fall back to similarity below that even when selected.
-  const mode = (transformMode === 'affine' && calPoints.length >= 3) ? 'affine' : 'similarity';
-  T = fitFromPoints(calPoints, mode);
+  // Only enabled points participate; disabled points are kept but excluded.
+  const pts  = enabledPoints();
+  const mode = (transformMode === 'affine' && pts.length >= 3) ? 'affine' : 'similarity';
+  T = fitFromPoints(pts, mode);
   updateCompass();
   updateScale();
   updateCalDiagnostics();
@@ -815,7 +829,7 @@ function updateCalDiagnostics() {
   const parts = [];
   const s = looStats();
   if (s) parts.push(`Leave-one-out deviation · mean ${Math.round(s.mean)} m · median ${Math.round(s.median)} m`);
-  if (effectiveMode(calPoints) === 'affine') {
+  if (effectiveMode() === 'affine') {
     const geom = geometryText(T);
     if (geom) parts.push(geom);
   }
@@ -904,7 +918,7 @@ function saveTransformMode() {
 
 function updateBadge() {
   const el = document.getElementById('cal-count');
-  const n  = calPoints.length;
+  const n  = enabledPoints().length;
   el.textContent = n || '';
   el.className   = n >= 2 ? 'many' : n >= 1 ? 'one' : '';
   refreshAffineToggle();
@@ -915,7 +929,7 @@ function updateBadge() {
 function refreshAffineToggle() {
   const btn = document.getElementById('cal-affine');
   if (!btn) return;
-  const enabled = calPoints.length >= 3;
+  const enabled = enabledPoints().length >= 3;
   const on = transformMode === 'affine';
   btn.disabled = !enabled;
   btn.classList.toggle('active', on && enabled);
@@ -954,7 +968,7 @@ function isWithinBounds(pixelPos) {
 function updateLocation(pixelPos, accuracyM) {
   const latlng = L.latLng(imgH - pixelPos.py, pixelPos.px);
   const accPx = accuracyM * (rawGps ? pxPerMetre(T) : 0);
-  const show = calPoints.length >= 2 && isWithinBounds(pixelPos);
+  const show = enabledPoints().length >= 2 && isWithinBounds(pixelPos);
   if (!userMarker) {
     accCircle  = L.circle(latlng, { radius: accPx, color: '#2196F3', weight: 1,
                                      fillColor: '#2196F3', fillOpacity: 0.10, interactive: false });
@@ -1102,7 +1116,7 @@ document.getElementById('gps-btn').addEventListener('click', () => {
     followMode = true;
     map.setView(userMarker.getLatLng(), Math.max(map.getZoom(), 0));
   } else {
-    toast(calPoints.length < 2
+    toast(enabledPoints().length < 2
       ? 'Calibrate first to show your position on the map.'
       : 'Your position is currently outside the map.', 4000);
   }
@@ -1114,19 +1128,22 @@ let calMarkers = [];
 function showCalMarkers() {
   hideCalMarkers();
   calPoints.forEach((p, i) => {
+    const enabled = p.enabled !== false;
     const latlng = L.latLng(imgH - p.py, p.px);
     const icon = L.divIcon({
-      html: '<div class="cal-pt-cross"></div>',
+      html: `<div class="cal-pt-cross${enabled ? '' : ' disabled'}"></div>`,
       iconSize: [20, 20], iconAnchor: [10, 10], className: ''
     });
-    const marker = L.marker(latlng, { icon, interactive: true, zIndexOffset: 900 }).addTo(map);
+    const marker = L.marker(latlng, { icon, interactive: true, zIndexOffset: enabled ? 900 : 850 }).addTo(map);
     marker.on('click', () => openPtConfirm(i));
     calMarkers.push(marker);
-    if (T) {
+    // Accuracy circle and residual line only for fit participants; disabled
+    // points show a muted cross alone (a residual vs T would be misleading).
+    if (T && enabled) {
       const r = p.accuracy * pxPerMetre(T);
       const circle = L.circle(latlng, {
-        radius: r, color: '#FF9800', weight: 1,
-        fillColor: '#FF9800', fillOpacity: 0.08, interactive: false
+        radius: r, color: '#00C853', weight: 1,
+        fillColor: '#00C853', fillOpacity: 0.08, interactive: false
       }).addTo(map);
       calMarkers.push(circle);
       // Divergence line: from the calibrated point to where the learned
@@ -1135,7 +1152,7 @@ function showCalMarkers() {
       if (pred) {
         const predLatlng = L.latLng(imgH - pred.py, pred.px);
         const line = L.polyline([latlng, predLatlng], {
-          color: '#E53935', weight: 2, opacity: 0.9, interactive: false
+          color: '#FFAB00', weight: 2, opacity: 0.9, interactive: false
         }).addTo(map);
         calMarkers.push(line);
       }
@@ -1153,18 +1170,22 @@ let pendingDeleteIdx = -1;
 function openPtConfirm(i) {
   pendingDeleteIdx = i;
   const p = calPoints[i];
+  const enabled = p.enabled !== false;
   const res = T ? ` · Δ${Math.round(pixelResidualM(p, T))} m residual` : '';
   // Refit without this point — the basis for its LOO deviation and, for affine
-  // maps, the excluded-fit geometry. Available only when enough points remain
-  // for the reduced fit to stay determined (mirrors looResiduals).
+  // maps, the excluded-fit geometry. Only meaningful for an enabled point (it's
+  // in the fit) and when enough enabled points remain for the reduced fit to
+  // stay determined (mirrors looResiduals).
   const mode = effectiveMode();
-  const tExcl = calPoints.length > MIN_POINTS[mode]
-    ? fitFromPoints(calPoints.filter((_, j) => j !== i), mode) : null;
+  const base = enabledPoints();
+  const tExcl = (enabled && base.length > MIN_POINTS[mode])
+    ? fitFromPoints(base.filter(q => q !== p), mode) : null;
   const looVal = tExcl ? pixelResidualM(p, tExcl) : Infinity;
   const looTxt = Number.isFinite(looVal) ? ` · Δ${Math.round(looVal)} m LOO` : '';
   const geomTxt = (mode === 'affine' && tExcl) ? ` · ${geometryText(tExcl)}` : '';
   document.getElementById('cal-pt-info').textContent =
-    `Point ${i + 1} · ±${Math.round(p.accuracy)} m GPS${res}${looTxt}${geomTxt}`;
+    `Point ${i + 1}${enabled ? '' : ' (disabled)'} · ±${Math.round(p.accuracy)} m GPS${res}${looTxt}${geomTxt}`;
+  document.getElementById('cal-pt-toggle').textContent = enabled ? 'Disable' : 'Enable';
   document.getElementById('cal-pt-confirm').classList.add('active');
 }
 
@@ -1174,6 +1195,14 @@ function closePtConfirm() {
 }
 
 document.getElementById('cal-pt-cancel').addEventListener('click', closePtConfirm);
+document.getElementById('cal-pt-toggle').addEventListener('click', () => {
+  if (pendingDeleteIdx < 0) return;
+  const p = calPoints[pendingDeleteIdx];
+  p.enabled = (p.enabled === false);   // flip: disabled→enabled, else→disabled
+  savePoints(); fitTransform(); updateBadge(); refreshMarker();
+  openPtConfirm(pendingDeleteIdx);     // re-render info + label, keep bar open
+  showCalMarkers();                    // recolor the toggled point
+});
 document.getElementById('cal-pt-delete').addEventListener('click', () => {
   if (pendingDeleteIdx < 0) return;
   calPoints.splice(pendingDeleteIdx, 1);
@@ -1197,7 +1226,7 @@ document.getElementById('cal-set').addEventListener('click', () => {
     accuracy: rawAccuracy, timestamp: Date.now()
   });
   savePoints(); fitTransform(); updateBadge(); closeCalUI(); refreshMarker();
-  const n = calPoints.length, acc = Math.round(rawAccuracy), need = 2 - n;
+  const n = enabledPoints().length, acc = Math.round(rawAccuracy), need = 2 - n;
   toast(n < 2
     ? `Point ${n} saved (±${acc} m). ${need} more point${need > 1 ? 's' : ''} needed.`
     : `${n} calibration points · ±${acc} m`);
@@ -1206,7 +1235,7 @@ document.getElementById('cal-set').addEventListener('click', () => {
 document.getElementById('cal-cancel').addEventListener('click', closeCalUI);
 
 document.getElementById('cal-affine').addEventListener('click', () => {
-  if (calPoints.length < 3) return;   // affine needs ≥3 points
+  if (enabledPoints().length < 3) return;   // affine needs ≥3 enabled points
   transformMode = transformMode === 'affine' ? 'similarity' : 'affine';
   saveTransformMode(); fitTransform(); refreshAffineToggle(); refreshMarker(); showCalMarkers();
   toast(transformMode === 'affine'
@@ -1254,13 +1283,15 @@ async function renderMapsList() {
   recs.sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
 
   for (const rec of recs) {
-    const n = (rec.calPoints || []).length;
+    const pts = rec.calPoints || [];
+    const n = pts.length;
+    const en = pts.filter(p => p.enabled !== false).length;   // calibration quality = enabled points
     const row = document.createElement('div');
     row.className = 'map-row' + (rec.id === currentMapId ? ' active' : '');
 
     const info = document.createElement('div');
     info.className = 'map-info';
-    const dot = n >= 2 ? '🟢' : n >= 1 ? '🟠' : '⚪';
+    const dot = en >= 2 ? '🟢' : en >= 1 ? '🟠' : '⚪';
     info.innerHTML =
       `<div class="map-name">${escapeHtml(rec.name || 'Map')}</div>` +
       `<div class="map-sub">${dot} ${n} point${n === 1 ? '' : 's'} · ${fmtDate(rec.lastUsed)}</div>`;
@@ -1352,7 +1383,7 @@ document.getElementById('map-file').addEventListener('change', async (e) => {
     closeMapsUI();
 
     const rec = await metaGet(id);
-    toast(rec && rec.calPoints && rec.calPoints.length >= 2
+    toast(rec && rec.calPoints && enabledPoints(rec.calPoints).length >= 2
       ? 'Map loaded — calibration restored'
       : 'Map loaded — calibrate to show your location', 5000);
   } catch (err) {

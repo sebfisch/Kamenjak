@@ -519,3 +519,204 @@ describe('delete active map falls back to default', () => {
 
   test('no JS errors', () => { assert.deepEqual(h.errors, []); });
 });
+
+// ── Enable / disable calibration points ───────────────────────────────────────
+
+describe('enable/disable calibration points', () => {
+  // Two well-conditioned points plus a third deliberate outlier, so disabling
+  // the outlier visibly changes the fit.
+  async function seed3(page) {
+    await page.evaluate(async () => {
+      window.imgH = 1000;
+      transformMode = 'similarity';
+      calPoints = [
+        { raw: { lat: 44,     lng: 13.9   }, px: 100, py: 200, accuracy: 5, timestamp: 1 },
+        { raw: { lat: 44.001, lng: 13.901 }, px: 300, py: 400, accuracy: 5, timestamp: 2 },
+        { raw: { lat: 44.002, lng: 13.902 }, px: 999, py: 50,  accuracy: 5, timestamp: 3 },
+      ];
+      fitTransform(); updateBadge();
+      await savePoints();
+    });
+  }
+
+  test('disabling a point excludes it from the fit', async () => {
+    const h = await freshPage();
+    try {
+      await seed3(h.page);
+      // Reference: the transform fit from only the first two points.
+      const ref = await h.page.evaluate(() =>
+        JSON.stringify(fitFromPoints(calPoints.slice(0, 2), 'similarity')));
+      // Disabling the outlier should reproduce exactly that fit.
+      const got = await h.page.evaluate(() => {
+        calPoints[2].enabled = false; fitTransform();
+        return JSON.stringify(T);
+      });
+      assert.equal(got, ref);
+      assert.deepEqual(h.errors, []);
+    } finally { await h.ctx.close(); }
+  });
+
+  test('disabling below 2 enabled hides compass/scale and downgrades the badge; re-enabling restores', async () => {
+    const h = await freshPage();
+    try {
+      await h.page.waitForFunction(() => typeof imgH !== 'undefined' && imgH > 0);
+      const before = await h.page.evaluate(() => {
+        calPoints = [
+          { raw: { lat: 44,     lng: 13.9   }, px: 100, py: 200, accuracy: 5, timestamp: 1 },
+          { raw: { lat: 44.001, lng: 13.901 }, px: 300, py: 400, accuracy: 5, timestamp: 2 },
+        ];
+        fitTransform(); updateBadge();
+        return {
+          compass: document.getElementById('compass').classList.contains('visible'),
+          scale:   document.getElementById('scale-bar').classList.contains('visible'),
+          badge:   document.getElementById('cal-count').className,
+        };
+      });
+      assert.ok(before.compass && before.scale, 'compass + scale visible with 2 enabled');
+      assert.equal(before.badge, 'many');
+
+      const after = await h.page.evaluate(() => {
+        calPoints[1].enabled = false;
+        fitTransform(); updateBadge();
+        return {
+          compass: document.getElementById('compass').classList.contains('visible'),
+          scale:   document.getElementById('scale-bar').classList.contains('visible'),
+          badge:   document.getElementById('cal-count').className,
+          total:   calPoints.length,
+        };
+      });
+      assert.ok(!after.compass, 'compass hidden with 1 enabled');
+      assert.ok(!after.scale, 'scale hidden with 1 enabled');
+      assert.equal(after.badge, 'one');
+      assert.equal(after.total, 2, 'the point is kept, not deleted');
+
+      const restored = await h.page.evaluate(() => {
+        calPoints[1].enabled = true;
+        fitTransform(); updateBadge();
+        return {
+          compass: document.getElementById('compass').classList.contains('visible'),
+          badge:   document.getElementById('cal-count').className,
+        };
+      });
+      assert.ok(restored.compass, 'compass visible again after re-enable');
+      assert.equal(restored.badge, 'many');
+      assert.deepEqual(h.errors, []);
+    } finally { await h.ctx.close(); }
+  });
+
+  test('enabled:false persists across reload', async () => {
+    const h = await freshPage();
+    try {
+      await h.page.evaluate(async () => {
+        calPoints = [
+          { raw: { lat: 44,     lng: 13.9   }, px: 100, py: 100, accuracy: 5, timestamp: 1 },
+          { raw: { lat: 44.001, lng: 13.901 }, px: 200, py: 200, accuracy: 5, timestamp: 2 },
+        ];
+        calPoints[1].enabled = false;
+        fitTransform(); updateBadge();
+        await savePoints();
+      });
+      await h.page.reload({ waitUntil: 'load' });
+      await waitForApp(h.page);
+      const res = await h.page.evaluate(() => ({
+        flag:    calPoints[1].enabled,
+        enabled: enabledPoints().length,
+        total:   calPoints.length,
+      }));
+      assert.equal(res.flag, false);
+      assert.equal(res.enabled, 1);
+      assert.equal(res.total, 2);
+      assert.deepEqual(h.errors, []);
+    } finally { await h.ctx.close(); }
+  });
+
+  test('points without an enabled field count as enabled (backward compatible)', async () => {
+    const h = await freshPage();
+    try {
+      const res = await h.page.evaluate(() => {
+        calPoints = [
+          { raw: { lat: 44,     lng: 13.9   }, px: 100, py: 100, accuracy: 5, timestamp: 1 },
+          { raw: { lat: 44.001, lng: 13.901 }, px: 200, py: 200, accuracy: 5, timestamp: 2 },
+        ];
+        updateBadge();
+        return {
+          enabled: enabledPoints().length,
+          total:   calPoints.length,
+          badge:   document.getElementById('cal-count').className,
+        };
+      });
+      assert.equal(res.enabled, res.total);
+      assert.equal(res.enabled, 2);
+      assert.equal(res.badge, 'many');
+      assert.deepEqual(h.errors, []);
+    } finally { await h.ctx.close(); }
+  });
+
+  test('per-point bar toggles the Enable/Disable label and keeps the bar open', async () => {
+    const h = await freshPage();
+    try {
+      const res = await h.page.evaluate(() => {
+        calPoints = [
+          { raw: { lat: 44,     lng: 13.9   }, px: 100, py: 100, accuracy: 5, timestamp: 1 },
+          { raw: { lat: 44.001, lng: 13.901 }, px: 200, py: 200, accuracy: 5, timestamp: 2 },
+        ];
+        fitTransform(); updateBadge();
+        openPtConfirm(0);
+        const initialLabel = document.getElementById('cal-pt-toggle').textContent;
+        document.getElementById('cal-pt-toggle').click();
+        const afterDisable = {
+          active: document.getElementById('cal-pt-confirm').classList.contains('active'),
+          label:  document.getElementById('cal-pt-toggle').textContent,
+          flag:   calPoints[0].enabled,
+        };
+        document.getElementById('cal-pt-toggle').click();
+        const afterEnable = {
+          label: document.getElementById('cal-pt-toggle').textContent,
+          flag:  calPoints[0].enabled,
+        };
+        return {
+          initialLabel, afterDisable, afterEnable,
+          deleteText: document.getElementById('cal-pt-delete').textContent,
+        };
+      });
+      assert.equal(res.initialLabel, 'Disable');
+      assert.ok(res.afterDisable.active, 'bar stays open after toggling');
+      assert.equal(res.afterDisable.label, 'Enable');
+      assert.equal(res.afterDisable.flag, false);
+      assert.equal(res.afterEnable.label, 'Disable');
+      assert.equal(res.afterEnable.flag, true);
+      assert.equal(res.deleteText, '✕');
+      assert.deepEqual(h.errors, []);
+    } finally { await h.ctx.close(); }
+  });
+
+  test('disabling below 3 enabled falls back from affine to similarity', async () => {
+    const h = await freshPage();
+    try {
+      const res = await h.page.evaluate(() => {
+        window.imgH = 1000;
+        transformMode = 'affine';
+        calPoints = Array.from({ length: 4 }, (_, i) => ({
+          raw: { lat: 44 + i * 0.001, lng: 13.9 + (i % 2) * 0.001 },
+          px: 100 + i * 50, py: 100 + (i % 2) * 40, accuracy: 5, timestamp: i + 1,
+        }));
+        fitTransform(); updateBadge();
+        const affineKind = T && T.kind;
+        const affineBtnEnabled = !document.getElementById('cal-affine').disabled;
+        calPoints[2].enabled = false;
+        calPoints[3].enabled = false;
+        fitTransform(); updateBadge();
+        return {
+          affineKind, affineBtnEnabled,
+          fallbackKind: T && T.kind,
+          fallbackBtnDisabled: document.getElementById('cal-affine').disabled,
+        };
+      });
+      assert.equal(res.affineKind, 'affine');
+      assert.ok(res.affineBtnEnabled, 'affine toggle enabled with 4 points');
+      assert.equal(res.fallbackKind, undefined);   // similarity transform has no kind field
+      assert.ok(res.fallbackBtnDisabled, 'affine toggle disabled with 2 enabled');
+      assert.deepEqual(h.errors, []);
+    } finally { await h.ctx.close(); }
+  });
+});
