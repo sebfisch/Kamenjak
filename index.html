@@ -692,6 +692,14 @@ function applyTransform(t, raw) {
   return { px: X, py: imgH - Y };
 }
 
+// 2×2 linear part of the transform (meters → pixels). Affine stores it directly;
+// similarity's [[a,-b],[b,a]] is expanded so callers can treat both uniformly.
+function linearPart(t) {
+  return t.kind === 'affine'
+    ? { a: t.a, b: t.b, c: t.c, d: t.d }
+    : { a: t.a, b: -t.b, c: t.b, d: t.a };
+}
+
 // Representative pixels-per-metre scale. Similarity: uniform s = √(a²+b²).
 // Affine: √|det| of the linear part (geometric mean of the x/y scales), which
 // equals √(a²+b²) for the similarity case where [[a,-b],[b,a]].
@@ -699,6 +707,35 @@ function pxPerMetre(t) {
   if (!t) return 0;
   if (t.kind === 'affine') return Math.sqrt(Math.abs(t.a*t.d - t.b*t.c));
   return Math.sqrt(t.a*t.a + t.b*t.b);
+}
+
+// Pixels per metre along the screen-horizontal (image-X) direction — the scale a
+// horizontal scale bar actually represents. Inverting M, one image-X pixel spans
+// √(c²+d²)/|det| metres, so px/m = |det|/√(c²+d²). Reduces to √(a²+b²) (= pxPerMetre)
+// for similarity, so isotropic maps are unaffected.
+function pxPerMetreHoriz(t) {
+  if (!t) return 0;
+  const { a, b, c, d } = linearPart(t);
+  const det = a*d - b*c, h = Math.hypot(c, d);
+  return h < 1e-10 ? 0 : Math.abs(det) / h;
+}
+
+// Geometric diagnostics of the linear part, informative only for affine maps:
+//   relScale  = σmax/σmin, the principal-axis stretch ratio (1 for similarity)
+//   shearDeg  = departure of the east/north axes from perpendicular (0 for similarity)
+//   reflected = orientation flipped (det < 0; unreachable for similarity's a²+b²≥0)
+function transformDiagnostics(t) {
+  if (!t) return null;
+  const { a, b, c, d } = linearPart(t);
+  const det = a*d - b*c;
+  const f = a*a + b*b + c*c + d*d;
+  const disc = Math.sqrt(Math.max(0, f*f - 4*det*det));
+  const smin2 = (f - disc) / 2, smax2 = (f + disc) / 2;
+  const relScale = smin2 > 1e-20 ? Math.sqrt(smax2 / smin2) : Infinity;
+  const e1 = Math.hypot(a, c), e2 = Math.hypot(b, d);
+  const shearDeg = (e1 < 1e-10 || e2 < 1e-10)
+    ? 0 : Math.asin(Math.max(-1, Math.min(1, (a*b + c*d) / (e1*e2)))) * 180 / Math.PI;
+  return { relScale, shearDeg, reflected: det < 0 };
 }
 
 // Pixel residual for point p under transform t, converted to metres
@@ -754,18 +791,28 @@ function fitTransform() {
   T = fitFromPoints(calPoints, mode);
   updateCompass();
   updateScale();
-  updateLooSummary();
+  updateCalDiagnostics();
 }
 
-// Mean/median leave-one-out deviation shown under the calibration controls when
-// no individual point is selected. Hidden (empty) when LOO is unavailable.
-function updateLooSummary() {
+// Diagnostics shown under the calibration controls when no individual point is
+// selected: mean/median leave-one-out deviation, plus — when an affine transform is
+// actually in effect — its scale-anisotropy and shear (uninformative for similarity,
+// where they are 1 and 0). Hidden (empty) when nothing applies.
+function updateCalDiagnostics() {
   const el = document.getElementById('cal-loo');
   if (!el) return;
+  const parts = [];
   const s = looStats();
-  el.textContent = s
-    ? `Leave-one-out deviation · mean ${Math.round(s.mean)} m · median ${Math.round(s.median)} m`
-    : '';
+  if (s) parts.push(`Leave-one-out deviation · mean ${Math.round(s.mean)} m · median ${Math.round(s.median)} m`);
+  if (effectiveMode(calPoints) === 'affine') {
+    const d = transformDiagnostics(T);
+    if (d) {
+      let geom = `scale ratio ${d.relScale.toFixed(2)} · shear ${Math.round(d.shearDeg)}°`;
+      if (d.reflected) geom += ' · mirrored';
+      parts.push(geom);
+    }
+  }
+  el.textContent = parts.join(' · ');
 }
 
 // North in meters space = (0,1); the linear part maps it to (-b, a) for
@@ -798,9 +845,10 @@ function formatScale(m) {
   return m >= 1000 ? `${m / 1000} km` : `${m} m`;
 }
 
-// Screen pixels per metre = (image-px per metre) × (screen-px per image-px).
+// Screen pixels per metre = (image-px per metre) × (screen-px per image-px). Uses
+// the horizontal-direction scale so the (horizontal) bar reads true for affine maps.
 function screenPxPerMetre() {
-  const ppm = pxPerMetre(T);
+  const ppm = pxPerMetreHoriz(T);
   if (ppm < 1e-10 || !imgH) return 0;
   // map.project is unrounded (unlike latLngToContainerPoint); the pan offset
   // cancels in the difference, leaving screen-px per image-px at this zoom.
@@ -992,7 +1040,7 @@ function openCalUI() {
   }
   document.getElementById('cal-ui').classList.add('active');
   updateGpsStatus();
-  updateLooSummary();
+  updateCalDiagnostics();
   bannerTimer = setInterval(updateGpsStatus, 1000);
   requestFreshFix();
   showCalMarkers();

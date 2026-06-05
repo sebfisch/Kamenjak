@@ -232,6 +232,116 @@ describe('pxPerMetre', () => {
   });
 });
 
+// ── pxPerMetreHoriz ───────────────────────────────────────────────────────────
+
+describe('pxPerMetreHoriz', () => {
+  let h;
+  before(async () => { h = await freshPage(); });
+  after(async () => { await h.ctx.close(); });
+
+  test('returns 0 for null transform', async () => {
+    const s = await h.page.evaluate(() => pxPerMetreHoriz(null));
+    assert.equal(s, 0);
+  });
+
+  test('similarity: equals the uniform scale (= pxPerMetre)', async () => {
+    const { horiz, iso } = await h.page.evaluate(() => ({
+      horiz: pxPerMetreHoriz({ a: 3, b: 4 }),
+      iso: pxPerMetre({ a: 3, b: 4 }),
+    }));
+    assert.ok(Math.abs(horiz - 5) < 1e-10, `expected 5, got ${horiz}`);
+    assert.ok(Math.abs(horiz - iso) < 1e-10, 'horizontal scale should match pxPerMetre for similarity');
+  });
+
+  test('affine pure stretch: picks the east (horizontal) scale, not √|det|', async () => {
+    // 8 px/m east, 3 px/m north. Horizontal bar runs along image-X (east) → 8.
+    const { horiz, iso } = await h.page.evaluate(() => ({
+      horiz: pxPerMetreHoriz({ kind: 'affine', a: 8, b: 0, c: 0, d: 3 }),
+      iso: pxPerMetre({ kind: 'affine', a: 8, b: 0, c: 0, d: 3 }),
+    }));
+    assert.ok(Math.abs(horiz - 8) < 1e-10, `expected 8, got ${horiz}`);
+    assert.ok(Math.abs(iso - Math.sqrt(24)) < 1e-10, `geometric mean should be √24, got ${iso}`);
+  });
+
+  test('returns 0 for a degenerate (near-singular) linear part', async () => {
+    const s = await h.page.evaluate(() =>
+      pxPerMetreHoriz({ kind: 'affine', a: 0, b: 0, c: 0, d: 0 })
+    );
+    assert.equal(s, 0);
+  });
+});
+
+// ── transformDiagnostics ──────────────────────────────────────────────────────
+
+describe('transformDiagnostics', () => {
+  let h;
+  before(async () => {
+    h = await freshPage();
+    await h.page.evaluate(() => { window.imgH = 1000; });
+  });
+  after(async () => { await h.ctx.close(); });
+
+  test('returns null for null transform', async () => {
+    const d = await h.page.evaluate(() => transformDiagnostics(null));
+    assert.equal(d, null);
+  });
+
+  test('similarity is conformal: relScale 1, shear 0, not reflected', async () => {
+    const d = await h.page.evaluate(() => transformDiagnostics({ a: 6, b: 2 }));
+    assert.ok(Math.abs(d.relScale - 1) < 1e-10, `relScale should be 1, got ${d.relScale}`);
+    assert.ok(Math.abs(d.shearDeg) < 1e-10, `shear should be 0, got ${d.shearDeg}`);
+    assert.equal(d.reflected, false);
+  });
+
+  test('affine pure stretch: relScale = max/min scale ratio, shear 0', async () => {
+    // 8 px/m east, 3 px/m north → σmax/σmin = 8/3, no shear.
+    const d = await h.page.evaluate(() =>
+      transformDiagnostics({ kind: 'affine', a: 8, b: 0, c: 0, d: 3 })
+    );
+    assert.ok(Math.abs(d.relScale - 8 / 3) < 1e-10, `relScale should be 8/3, got ${d.relScale}`);
+    assert.ok(Math.abs(d.shearDeg) < 1e-10, `shear should be 0, got ${d.shearDeg}`);
+    assert.equal(d.reflected, false);
+  });
+
+  test('affine shear: east/north depart from perpendicular by a known angle', async () => {
+    // east = (1, 0), north = (tan30°, 1): unit-length columns skewed by 30°.
+    const d = await h.page.evaluate(() => {
+      const k = Math.tan(30 * Math.PI / 180);
+      return transformDiagnostics({ kind: 'affine', a: 1, b: k, c: 0, d: 1 });
+    });
+    assert.ok(Math.abs(Math.abs(d.shearDeg) - 30) < 1e-6, `shear should be ~30°, got ${d.shearDeg}`);
+  });
+
+  test('detects reflection (det < 0)', async () => {
+    const d = await h.page.evaluate(() =>
+      transformDiagnostics({ kind: 'affine', a: 8, b: 0, c: 0, d: -3 })
+    );
+    assert.equal(d.reflected, true);
+  });
+
+  test('derived from a fitted anisotropic transform', async () => {
+    const d = await h.page.evaluate(() => {
+      const lat0 = 44.0, lng0 = 13.9;
+      const R = 6371000, rad = Math.PI / 180, coslat0 = Math.cos(lat0 * rad);
+      const gps = [
+        { lat: 44.000, lng: 13.900 },
+        { lat: 44.001, lng: 13.901 },
+        { lat: 44.002, lng: 13.899 },
+        { lat: 43.999, lng: 13.902 },
+      ];
+      const pts = gps.map(raw => {
+        const u = (raw.lng - lng0) * coslat0 * R * rad;
+        const v = (raw.lat - lat0) * R * rad;
+        const X = 8 * u + 1000, Y = 3 * v + 1000; // 8 px/m east, 3 px/m north
+        return { raw, px: X, py: 1000 - Y };
+      });
+      return transformDiagnostics(fitFromPoints(pts, 'affine'));
+    });
+    assert.ok(Math.abs(d.relScale - 8 / 3) < 1e-3, `relScale should be ~8/3, got ${d.relScale}`);
+    assert.ok(Math.abs(d.shearDeg) < 1e-3, `shear should be ~0, got ${d.shearDeg}`);
+  });
+});
+
 // ── rmseMetres ────────────────────────────────────────────────────────────────
 
 describe('rmseMetres', () => {

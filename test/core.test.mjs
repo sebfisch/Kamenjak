@@ -217,6 +217,23 @@ describe('leave-one-out summary', () => {
       assert.match(info, /LOO/);
     } finally { await h.ctx.close(); }
   });
+
+  test('affine mode appends scale-ratio and shear diagnostics; similarity does not', async () => {
+    const h = await freshPage();
+    try {
+      await seedPoints(h.page, 4);
+      // Similarity (default): geometry diagnostics are uninformative, so omitted.
+      const sim = await h.page.textContent('#cal-loo');
+      assert.doesNotMatch(sim, /scale ratio/);
+      assert.doesNotMatch(sim, /shear/);
+      // Switch to affine and re-fit: diagnostics appear alongside the LOO line.
+      await h.page.evaluate(() => { transformMode = 'affine'; fitTransform(); });
+      const aff = await h.page.textContent('#cal-loo');
+      assert.match(aff, /Leave-one-out/);
+      assert.match(aff, /scale ratio/);
+      assert.match(aff, /shear/);
+    } finally { await h.ctx.close(); }
+  });
 });
 
 // ── Per-map isolation ─────────────────────────────────────────────────────────
