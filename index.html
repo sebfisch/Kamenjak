@@ -1020,6 +1020,16 @@ function showCalMarkers() {
         fillColor: '#FF9800', fillOpacity: 0.08, interactive: false
       }).addTo(map);
       calMarkers.push(circle);
+      // Divergence line: from the calibrated point to where the learned
+      // transform would place this GPS reading, showing direction of error.
+      const pred = applyTransform(T, p.raw);
+      if (pred) {
+        const predLatlng = L.latLng(imgH - pred.py, pred.px);
+        const line = L.polyline([latlng, predLatlng], {
+          color: '#E53935', weight: 2, opacity: 0.9, interactive: false
+        }).addTo(map);
+        calMarkers.push(line);
+      }
     }
   });
 }
