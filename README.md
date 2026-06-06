@@ -58,10 +58,13 @@ tap again to confirm (the bundled default cannot be removed).
 - The accuracy badge shows GPS quality; calibrate when it is green (≤ 20 m).
 - The app opens Google-Maps-style fresh GPS fixes every 30 seconds and whenever
   you switch back to the tab, to maintain WiFi-assisted accuracy.
-- To review or remove individual points, open calibration mode — existing points
-  appear on the map as orange crosses with accuracy circles. Tap a cross to see
-  its GPS accuracy and fit residual, then delete it if needed. The ↺ button
-  clears all points at once.
+- To review, disable, or remove individual points, open calibration mode — each
+  point shows as a cross: **green** for points used in the fit (with a green
+  accuracy circle and an amber line to where the transform places that reading)
+  and **grey** for disabled ones. Tap a cross to see its GPS accuracy and fit
+  residual, then tap **Disable** to exclude it from the fit without deleting it
+  (tap again to **Enable**), or tap **✕** to delete it. The ↺ button clears all
+  points at once.
 - Keep the default similarity transform for maps that are to scale. If a map is
   stretched or skewed and the fit stays off no matter how many points you add,
   tap the **Aff** button next to ↺ (enabled at three or more points) to fit a full
