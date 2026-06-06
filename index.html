@@ -205,7 +205,11 @@
     /* ── Cal-point markers (shown on map while cal-ui is open) ── */
     .cal-pt-cross {
       position: relative; width: 20px; height: 20px;
-      background: radial-gradient(circle, rgba(0,0,0,0.45) 38%, transparent 62%);
+      /* Light outline ring (painted first → on top) over the translucent dark
+         disc, so the small marker stays visible against varied map backgrounds. */
+      background:
+        radial-gradient(circle, transparent 53%, rgba(255,255,255,0.9) 54%, rgba(255,255,255,0.9) 57%, transparent 58%),
+        radial-gradient(circle, rgba(0,0,0,0.45) 38%, transparent 62%);
     }
     .cal-pt-cross::before, .cal-pt-cross::after {
       content: ''; position: absolute;
@@ -1040,6 +1044,12 @@ function updateAccBadge(accuracyM) {
   el.classList.add('visible');
 }
 
+// Leaflet's watch uses navigator.geolocation.watchPosition() under the hood; it
+// must be explicitly stopped, otherwise the device keeps tracking in the background.
+function startLocate() {
+  map.locate({ watch: true, enableHighAccuracy: true, maximumAge: 5000 });
+}
+
 // ── Periodic fresh-fix interval (keeps WiFi-assisted accuracy alive) ──────────
 let freshFixInterval = null;
 function startFreshFixInterval() {
@@ -1059,10 +1069,12 @@ function stopFreshFixInterval() {
 // Also pause/resume the interval so it only fires while the tab is in focus.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && tracking) {
+    startLocate();
     requestFreshFix();
     startFreshFixInterval();
   } else if (document.visibilityState === 'hidden') {
     stopFreshFixInterval();
+    map.stopLocate();
   }
 });
 
@@ -1120,7 +1132,7 @@ map.on('zoom zoomend viewreset', updateScale);
 
 document.getElementById('gps-btn').addEventListener('click', () => {
   if (!tracking) {
-    map.locate({ watch: true, enableHighAccuracy: true, maximumAge: 5000 });
+    startLocate();
     tracking = followMode = true;
     document.getElementById('gps-btn').classList.add('active');
     toast('GPS started — calibrate to show your position', 4000);
