@@ -203,14 +203,17 @@
     #cal-affine:disabled { opacity: 0.4; cursor: default; }
 
     /* ── Cal-point markers (shown on map while cal-ui is open) ── */
-    .cal-pt-cross { position: relative; width: 20px; height: 20px; }
+    .cal-pt-cross {
+      position: relative; width: 20px; height: 20px;
+      background: radial-gradient(circle, rgba(0,0,0,0.45) 38%, transparent 62%);
+    }
     .cal-pt-cross::before, .cal-pt-cross::after {
       content: ''; position: absolute;
       background: var(--cal-cross-color, rgba(0,200,83,0.95)); border-radius: 1px;
     }
     .cal-pt-cross::before { width: 100%; height: 2px; top: 50%; transform: translateY(-50%); }
     .cal-pt-cross::after  { width: 2px; height: 100%; left: 50%; transform: translateX(-50%); }
-    .cal-pt-cross.disabled { --cal-cross-color: rgba(150,150,150,0.65); }
+    .cal-pt-cross.disabled { --cal-cross-color: rgba(210,210,210,0.85); }
 
     /* ── Per-point deletion confirmation bar ── */
     #cal-pt-confirm {
@@ -1041,7 +1044,11 @@ function updateAccBadge(accuracyM) {
 let freshFixInterval = null;
 function startFreshFixInterval() {
   clearInterval(freshFixInterval);
-  freshFixInterval = setInterval(requestFreshFix, 30_000);
+  freshFixInterval = null;
+  // Only run while the tab is visible; paused automatically when hidden.
+  if (document.visibilityState === 'visible') {
+    freshFixInterval = setInterval(requestFreshFix, 30_000);
+  }
 }
 function stopFreshFixInterval() {
   clearInterval(freshFixInterval);
@@ -1049,8 +1056,14 @@ function stopFreshFixInterval() {
 }
 
 // Re-request when switching back to the tab (best moment for a fresh WiFi fix)
+// Also pause/resume the interval so it only fires while the tab is in focus.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && tracking) requestFreshFix();
+  if (document.visibilityState === 'visible' && tracking) {
+    requestFreshFix();
+    startFreshFixInterval();
+  } else if (document.visibilityState === 'hidden') {
+    stopFreshFixInterval();
+  }
 });
 
 function openCalUI() {
